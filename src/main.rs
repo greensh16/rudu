@@ -9,6 +9,7 @@ use std::{
 };
 use walkdir::WalkDir;
 use std::os::unix::ffi::OsStrExt;
+use globset::{Glob, GlobSet, GlobSetBuilder};
 
 /// Rust-powered disk usage calculator (like `du`, but faster and safer)
 #[derive(Parser, Debug)]
@@ -29,6 +30,10 @@ struct Args {
     /// Show individual files at the target depth (default: true)
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     show_files: bool,
+
+    /// Exclude entries with matching names (e.g., '.git', 'node_modules')
+    #[arg(long, value_name = "PATTERN", num_args = 1.., action = clap::ArgAction::Append)]
+    exclude: Vec<String>,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
@@ -61,14 +66,65 @@ fn path_depth(root: &Path, path: &Path) -> usize {
         .unwrap_or(0)
 }
 
+fn build_exclude_matcher(patterns: &[String]) -> GlobSet {
+    let mut builder = GlobSetBuilder::new();
+    for pattern in patterns {
+        match Glob::new(pattern) {
+            Ok(glob) => {
+                builder.add(glob);
+            }
+            Err(_) => {
+                eprintln!("Warning: Invalid pattern '{}'", pattern);
+            }
+        }
+    }
+    builder.build().unwrap()
+}
+
+fn expand_exclude_patterns(patterns: &[String]) -> Vec<String> {
+    let mut expanded = Vec::new();
+
+    for pat in patterns {
+        let pat = pat.trim();
+        // If pattern already contains glob-like syntax, keep as-is
+        if pat.contains('*') || pat.ends_with('/') || pat.contains('.') {
+            expanded.push(pat.to_string());
+        } else {
+            // Expand into **/PAT and **/PAT/**
+            expanded.push(format!("**/{}", pat));
+            expanded.push(format!("**/{}/**", pat));
+        }
+    }
+
+    expanded
+}
+
 fn main() {
     let args = Args::parse();
     let root = &args.path;
+    let expanded_patterns = expand_exclude_patterns(&args.exclude);
+    let exclude_matcher = build_exclude_matcher(&expanded_patterns);
 
-    // Step 1: Walk all files
     let entries: Vec<_> = WalkDir::new(root)
         .follow_links(false)
         .into_iter()
+        .filter_entry(|entry| {
+            let path = entry.path();
+
+            // Check exact match on this path
+            if exclude_matcher.is_match(path) {
+                return false;
+            }
+
+            // Check parent path too — to catch '**/dir/**'
+            for ancestor in path.ancestors() {
+                if exclude_matcher.is_match(ancestor) {
+                    return false;
+                }
+            }
+
+            true
+        })
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file())
         .collect();
