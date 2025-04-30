@@ -25,6 +25,10 @@ struct Args {
     /// Sort output by name or size
     #[arg(long, value_enum, default_value_t = SortKey::Name)]
     sort: SortKey,
+
+    /// Show individual files at the target depth (default: true)
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    show_files: bool,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
@@ -110,7 +114,7 @@ fn main() {
         }
 
         println!(
-            "{:<12} {}",
+            "[DIR]  {:<12} {}",
             format_size(**size, DECIMAL),
             dir.strip_prefix(root).unwrap_or(dir).display()
         );
@@ -126,8 +130,12 @@ fn main() {
             continue;
         }
 
+        if !args.show_files {
+            continue;
+        }
+        
         println!(
-            "{:<12} {}",
+            "[FILE] {:<12} {}",
             format_size(*size, DECIMAL),
             file_path
                 .strip_prefix(root)
