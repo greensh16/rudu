@@ -1,2 +1,53 @@
 # rudu
-Command line app written in Rust for tracking directory and file sizes like du. 
+
+**`rudu`** is a high-performance, Rust-powered replacement for the traditional Unix `du` (disk usage) command. It was built to provide a safer, faster, and more extensible alternative for scanning and analyzing directory sizes — especially for large-scale or deep filesystem structures.
+
+While `du` has been a reliable tool for decades, it's single-threaded, limited in extensibility, and not always ideal for custom workflows or integration with modern systems. `rudu` takes advantage of Rust’s memory safety and concurrency to provide a tool that is:
+
+- **Fast** — uses multithreading (`rayon`) to speed up directory traversal and size aggregation.
+- **Safe** — memory-safe by design, no segfaults or undefined behavior.
+- **Extensible** — easy to add new flags, filters, and output formats as the tool grows.
+- **Accurate** — by default, `rudu` reports true disk usage (allocated blocks), not just file sizes.
+
+---
+
+## Features
+
+- ✅ Recursive disk usage scanning
+- ✅ Parallelized file traversal for large directories
+- ✅ Real disk usage via `st_blocks * 512`, just like `du`
+- ✅ Directory depth filtering (`--depth`)
+- ✅ Sort output by size or name (`--sort size|name`)
+- ✅ Optional file listing (`--show-files=true|false`)
+- ✅ `[DIR]` and `[FILE]` labels for clear output
+- ✅ Cross-platform compatible (POSIX-style filesystem; currently optimized for Unix-like systems)
+
+---
+
+## Example Usage
+
+```bash
+# Scan current directory, default settings
+rudu
+
+# Scan a target directory
+rudu /data
+
+# Show only top-level directories (depth = 1)
+rudu /data --depth 1
+
+# Sort by size, not name
+rudu /data --sort size
+
+# Hide individual files in output
+rudu /data --show-files=false
+```
+
+## Planned features
+
+- --exclude PATTERN
+- --format json|csv|plain
+- --output report.csv
+- --min-size N
+- Progress bar 
+
