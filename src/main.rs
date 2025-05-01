@@ -1,21 +1,18 @@
 use clap::{Parser, ValueEnum};
 use humansize::{format_size, DECIMAL};
-use libc::{stat as libc_stat, stat, getpwuid};
 use rayon::prelude::*;
 use std::{
     collections::HashMap,
-    ffi::CString,
-    ffi::CStr,
-    path::{Path, PathBuf},
+    path::PathBuf,
 };
 use walkdir::WalkDir;
-use std::os::unix::ffi::OsStrExt;
-use globset::{Glob, GlobSet, GlobSetBuilder};
 
+mod utils;
+use utils::{disk_usage, path_depth, get_owner, expand_exclude_patterns, build_exclude_matcher};
 
 /// Rust-powered disk usage calculator (like `du`, but faster and safer)
 #[derive(Parser, Debug)]
-#[command(name = "rudu", author, version, about)]
+#[command(name = "rudu", author = "Sam Green", version = "1.0.0", about)]
 struct Args {
     /// Path to scan (defaults to current directory)
     #[arg(default_value = ".")]
@@ -46,79 +43,6 @@ struct Args {
 enum SortKey {
     Name,
     Size,
-}
-
-/// Get true disk usage of a file (in bytes), using st_blocks * 512
-fn disk_usage(path: &Path) -> u64 {
-    let c_path = match CString::new(path.as_os_str().as_bytes()) {
-        Ok(p) => p,
-        Err(_) => return 0,
-    };
-
-    let mut stat_buf: stat = unsafe { std::mem::zeroed() };
-    let result = unsafe { libc_stat(c_path.as_ptr(), &mut stat_buf) };
-
-    if result == 0 {
-        (stat_buf.st_blocks as u64) * 512
-    } else {
-        0
-    }
-}
-
-/// Count levels between root and child
-fn path_depth(root: &Path, path: &Path) -> usize {
-    path.strip_prefix(root)
-        .map(|p| p.components().count())
-        .unwrap_or(0)
-}
-
-fn build_exclude_matcher(patterns: &[String]) -> GlobSet {
-    let mut builder = GlobSetBuilder::new();
-    for pattern in patterns {
-        match Glob::new(pattern) {
-            Ok(glob) => {
-                builder.add(glob);
-            }
-            Err(_) => {
-                eprintln!("Warning: Invalid pattern '{}'", pattern);
-            }
-        }
-    }
-    builder.build().unwrap()
-}
-
-fn expand_exclude_patterns(patterns: &[String]) -> Vec<String> {
-    let mut expanded = Vec::new();
-
-    for pat in patterns {
-        let pat = pat.trim();
-        // If pattern already contains glob-like syntax, keep as-is
-        if pat.contains('*') || pat.ends_with('/') || pat.contains('.') {
-            expanded.push(pat.to_string());
-        } else {
-            // Expand into **/PAT and **/PAT/**
-            expanded.push(format!("**/{}", pat));
-            expanded.push(format!("**/{}/**", pat));
-        }
-    }
-
-    expanded
-}
-
-fn get_owner(path: &Path) -> Option<String> {
-    let c_path = CString::new(path.as_os_str().as_bytes()).ok()?;
-    let mut stat_buf: stat = unsafe { std::mem::zeroed() };
-    if unsafe { libc_stat(c_path.as_ptr(), &mut stat_buf) } != 0 {
-        return None;
-    }
-
-    let pw = unsafe { getpwuid(stat_buf.st_uid) };
-    if pw.is_null() {
-        return Some(stat_buf.st_uid.to_string()); // fallback to UID
-    }
-
-    let name = unsafe { CStr::from_ptr((*pw).pw_name) };
-    name.to_str().ok().map(String::from)
 }
 
 fn main() {
