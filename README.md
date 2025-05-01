@@ -1,5 +1,9 @@
 # rudu
 
+<div align="center">
+  <img src="https://github.com/user-attachments/assets/721ab886-1d01-4572-9f9f-63dc77ef2698" width="200" height="200" />
+</div>
+
 **`rudu`** is a high-performance, Rust-powered replacement for the traditional Unix `du` (disk usage) command. It was built to provide a safer, faster, and more extensible alternative for scanning and analyzing directory sizes — especially for large-scale or deep filesystem structures.
 
 While `du` has been a reliable tool for decades, it's single-threaded, limited in extensibility, and not always ideal for custom workflows or integration with modern systems. `rudu` takes advantage of Rust’s memory safety and concurrency to provide a tool that is:
