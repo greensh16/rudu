@@ -1,15 +1,17 @@
 use clap::{Parser, ValueEnum};
 use humansize::{format_size, DECIMAL};
-use libc::{stat as libc_stat, stat};
+use libc::{stat as libc_stat, stat, getpwuid};
 use rayon::prelude::*;
 use std::{
     collections::HashMap,
     ffi::CString,
+    ffi::CStr,
     path::{Path, PathBuf},
 };
 use walkdir::WalkDir;
 use std::os::unix::ffi::OsStrExt;
 use globset::{Glob, GlobSet, GlobSetBuilder};
+
 
 /// Rust-powered disk usage calculator (like `du`, but faster and safer)
 #[derive(Parser, Debug)]
@@ -34,6 +36,10 @@ struct Args {
     /// Exclude entries with matching names (e.g., '.git', 'node_modules')
     #[arg(long, value_name = "PATTERN", num_args = 1.., action = clap::ArgAction::Append)]
     exclude: Vec<String>,
+
+    /// Show owner (username) of each file/directory
+    #[arg(long, default_value_t = false)]
+    show_owner: bool,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
@@ -97,6 +103,22 @@ fn expand_exclude_patterns(patterns: &[String]) -> Vec<String> {
     }
 
     expanded
+}
+
+fn get_owner(path: &Path) -> Option<String> {
+    let c_path = CString::new(path.as_os_str().as_bytes()).ok()?;
+    let mut stat_buf: stat = unsafe { std::mem::zeroed() };
+    if unsafe { libc_stat(c_path.as_ptr(), &mut stat_buf) } != 0 {
+        return None;
+    }
+
+    let pw = unsafe { getpwuid(stat_buf.st_uid) };
+    if pw.is_null() {
+        return Some(stat_buf.st_uid.to_string()); // fallback to UID
+    }
+
+    let name = unsafe { CStr::from_ptr((*pw).pw_name) };
+    name.to_str().ok().map(String::from)
 }
 
 fn main() {
@@ -164,39 +186,48 @@ fn main() {
         if args
             .depth
             .map(|d| path_depth(root, dir) > d)
-            .unwrap_or(false)
-        {
+            .unwrap_or(false) {
             continue;
         }
-
+    
+        let owner = if args.show_owner {
+            get_owner(dir)
+                .unwrap_or_else(|| "unknown".to_string())
+        } else {
+            "".to_string()
+        };
+    
         println!(
-            "[DIR]  {:<12} {}",
+            "[DIR]  {:<12} {:<10} {}",
             format_size(**size, DECIMAL),
+            owner,
             dir.strip_prefix(root).unwrap_or(dir).display()
         );
     }
 
     // Step 6: Print files at exact depth (not parent!)
-    for (file_path, size) in &file_data {
-        if args
-            .depth
-            .map(|d| path_depth(root, file_path) != d)
-            .unwrap_or(true)
-        {
-            continue;
+    if args.show_files {
+        for (file_path, size) in &file_data {
+            if args
+                .depth
+                .map(|d| path_depth(root, file_path) != d)
+                .unwrap_or(true) {
+                continue;
+            }
+    
+            let owner = if args.show_owner {
+                get_owner(file_path)
+                    .unwrap_or_else(|| "unknown".to_string())
+            } else {
+                "".to_string()
+            };
+    
+            println!(
+                "[FILE] {:<12} {:<10} {}",
+                format_size(*size, DECIMAL),
+                owner,
+                file_path.strip_prefix(root).unwrap_or(file_path).display()
+            );
         }
-
-        if !args.show_files {
-            continue;
-        }
-        
-        println!(
-            "[FILE] {:<12} {}",
-            format_size(*size, DECIMAL),
-            file_path
-                .strip_prefix(root)
-                .unwrap_or(file_path)
-                .display()
-        );
     }
 }

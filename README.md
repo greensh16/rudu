@@ -22,6 +22,7 @@ While `du` has been a reliable tool for decades, it's single-threaded, limited i
 - ✅ `[DIR]` and `[FILE]` labels for clear output
 - ✅ Cross-platform compatible (POSIX-style filesystem; currently optimized for Unix-like systems)
 - ✅ Option to exclude specific directories and files (--exclude .git, excepts globbed .g*). 
+- ✅ Option to show directory and file ownership (--show-owner)
 
 ---
 
@@ -46,7 +47,6 @@ rudu /data --show-files=false
 
 ## Planned features
 
-- 
 - --format json|csv|plain
 - --output report.csv
 - --min-size N
