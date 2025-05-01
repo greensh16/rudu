@@ -1,3 +1,22 @@
+//! Entry point for the `rudu` CLI tool.
+//!
+//! `rudu` is a Rust-powered, parallelized replacement for the classic `du` (disk usage) command.
+//! This module handles:
+//! - Argument parsing using `clap`
+//! - Directory traversal using `walkdir`
+//! - Disk usage analysis using `libc`
+//! - File ownership resolution
+//! - Optional filtering via glob-based exclude patterns
+//! - Pretty printing with support for directory depth, owner, and file visibility
+//!
+//! This file integrates all functionality from `utils.rs` and drives the application.
+//!
+//! Example usage:
+//!
+//! ```sh
+//! rudu --depth 2 --sort size --show-owner --exclude node_modules
+//! ```
+
 use clap::{Parser, ValueEnum};
 use humansize::{format_size, DECIMAL};
 use rayon::prelude::*;
