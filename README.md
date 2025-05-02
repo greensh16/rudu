@@ -1,5 +1,7 @@
 # rudu
 
+![workflow](https://github.com/greensh16/rudu/actions/workflows/rust_check.yml/badge.svg)
+
 <div align="center">
   <img src="https://github.com/user-attachments/assets/721ab886-1d01-4572-9f9f-63dc77ef2698" width="200" height="200" />
 </div>
