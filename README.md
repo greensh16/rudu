@@ -1,6 +1,7 @@
 # rudu
 
 ![workflow](https://github.com/greensh16/rudu/actions/workflows/rust_check.yml/badge.svg)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.15321605.svg)](https://doi.org/10.5281/zenodo.15321605)
 
 <div align="center">
   <img src="https://github.com/user-attachments/assets/721ab886-1d01-4572-9f9f-63dc77ef2698" width="200" height="200" />
