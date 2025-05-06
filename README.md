@@ -31,6 +31,7 @@ While `du` has been a reliable tool for decades, it's single-threaded, limited i
 - ✅ Option to exclude specific directories and files (`--exclude .git, excepts globbed .g*`)
 - ✅ Option to show directory and file ownership (`--show-owner`)
 - ✅ Option to output to csv file (`--output report.csv`)
+- ✅ Option to specify number of threads to use in parallel file scanning (`--threads #`)
 ---
 
 ## Example Usage

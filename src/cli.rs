@@ -51,6 +51,10 @@ pub struct Args {
     /// Write output to a CSV file instead of stdout
     #[arg(long, value_name = "FILE")]
     pub output: Option<String>,
+
+    /// Limit the number of CPU threads used (default: use all available)
+    #[arg(long, value_name = "N")]
+    pub threads: Option<usize>,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]

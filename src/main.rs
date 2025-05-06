@@ -26,11 +26,7 @@
 
 use clap::Parser;
 use humansize::{format_size, DECIMAL};
-use std::{
-    time::Duration,
-    fs::File,
-};
-use indicatif::{ProgressBar, ProgressStyle};
+use std::fs::File;
 use csv::Writer;
 use anyhow::Result;
 
@@ -61,13 +57,19 @@ fn main() -> Result<()> {
                     "#
         );
 
-    // Create progress spinner
-    let pb = ProgressBar::new_spinner();
-    pb.set_style(ProgressStyle::default_spinner()
-        .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"])
-        .template("{spinner} Scanning files... [{elapsed}]")
-        .unwrap());
-    pb.enable_steady_tick(Duration::from_millis(100));
+    // Set-up CPU threads
+    if let Some(n_threads) = args.threads {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(n_threads)
+            .build_global()
+            .expect("Failed to configure thread pool");
+        println!("🔧 Using {} CPU thread(s)", n_threads);
+    } else {
+        println!(
+            "🔧 Using all {} available CPU threads",
+            num_cpus::get()
+        );
+    }
 
     let (file_data, sorted_dirs) = scan_files_and_dirs(root, &args, &exclude_matcher, args.sort);
 
