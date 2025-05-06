@@ -1,166 +1,164 @@
-//! Entry point for the `rudu` CLI tool.
+//! Main entry point for the `rudu` CLI application.
 //!
-//! `rudu` is a Rust-powered, parallelized replacement for the classic `du` (disk usage) command.
-//! This module handles:
-//! - Argument parsing using `clap`
-//! - Directory traversal using `walkdir`
-//! - Disk usage analysis using `libc`
-//! - File ownership resolution
-//! - Optional filtering via glob-based exclude patterns
-//! - Pretty printing with support for directory depth, owner, and file visibility
+//! `rudu` is a fast, Rust-powered replacement for the traditional `du` (disk usage) command.
+//! It provides disk usage summaries with support for file filtering, depth control,
+//! user ownership display, CSV export, and a progress spinner.
 //!
-//! This file integrates all functionality from `utils.rs` and drives the application.
+//! # Responsibilities
+//! - Parses CLI arguments via [`clap`] using the [`Args`] struct
+//! - Sets up glob-based file/directory exclusion rules
+//! - Delegates directory traversal and size aggregation to [`scan::scan_files_and_dirs`]
+//! - Handles terminal or CSV output formatting and sorting
 //!
-//! Example usage:
+//! # Output Modes
+//! - Terminal table view with size, owner, and type markers
+//! - CSV export via `--output <file.csv>`
 //!
-//! ```sh
-//! rudu --depth 2 --sort size --show-owner --exclude node_modules
-//! ```
+//! # Flags of Interest
+//! - `--depth N`: Limit directory depth in output
+//! - `--exclude PATTERN`: Skip matching paths
+//! - `--show-owner`: Show username for each entry
+//! - `--sort size|name`: Sort output by size or name
+//!
+//! # Modules
+//! - [`scan`] - file system traversal and size aggregation
+//! - [`utils`] - helpers for file metadata, ownership, and pattern matching
 
-use clap::{Parser, ValueEnum};
+use clap::Parser;
 use humansize::{format_size, DECIMAL};
-use rayon::prelude::*;
 use std::{
-    collections::HashMap,
-    path::PathBuf,
+    time::Duration,
+    fs::File,
 };
-use walkdir::WalkDir;
+use indicatif::{ProgressBar, ProgressStyle};
+use csv::Writer;
+use anyhow::Result;
 
 mod utils;
-use utils::{disk_usage, path_depth, get_owner, expand_exclude_patterns, build_exclude_matcher};
-
-/// Rust-powered disk usage calculator (like `du`, but faster and safer)
-#[derive(Parser, Debug)]
-#[command(name = "rudu", author = "Sam Green", version = "1.0.0", about)]
-struct Args {
-    /// Path to scan (defaults to current directory)
-    #[arg(default_value = ".")]
-    path: PathBuf,
-
-    /// Limit output to directories up to N levels deep
-    #[arg(long)]
-    depth: Option<usize>,
-
-    /// Sort output by name or size
-    #[arg(long, value_enum, default_value_t = SortKey::Name)]
-    sort: SortKey,
-
-    /// Show individual files at the target depth (default: true)
-    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
-    show_files: bool,
-
-    /// Exclude entries with matching names (e.g., '.git', 'node_modules')
-    #[arg(long, value_name = "PATTERN", num_args = 1.., action = clap::ArgAction::Append)]
-    exclude: Vec<String>,
-
-    /// Show owner (username) of each file/directory
-    #[arg(long, default_value_t = false)]
-    show_owner: bool,
-}
-
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
-enum SortKey {
-    Name,
-    Size,
-}
-
-fn main() {
+use utils::{path_depth, get_owner, expand_exclude_patterns, build_exclude_matcher};
+mod scan;
+use scan::scan_files_and_dirs;
+mod cli;
+use cli::{Args, CsvEntry};
+ 
+fn main() -> Result<()> {
     let args = Args::parse();
     let root = &args.path;
     let expanded_patterns = expand_exclude_patterns(&args.exclude);
     let exclude_matcher = build_exclude_matcher(&expanded_patterns);
 
-    let entries: Vec<_> = WalkDir::new(root)
-        .follow_links(false)
-        .into_iter()
-        .filter_entry(|entry| {
-            let path = entry.path();
+    println!(
+    r#"
+------------------------------------------------------------------
+        .______       __    __   _______   __    __  
+        |   _  \     |  |  |  | |       \ |  |  |  | 
+        |  |_)  |    |  |  |  | |  .--.  ||  |  |  | 
+        |      /     |  |  |  | |  |  |  ||  |  |  | 
+        |  |\  \----.|  `--'  | |  '--'  ||  `--'  | 
+        | _| `._____| \______/  |_______/  \______/
+                    Rust-based du tool
+------------------------------------------------------------------            
+                    "#
+        );
 
-            // Check exact match on this path
-            if exclude_matcher.is_match(path) {
-                return false;
-            }
+    // Create progress spinner
+    let pb = ProgressBar::new_spinner();
+    pb.set_style(ProgressStyle::default_spinner()
+        .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"])
+        .template("{spinner} Scanning files... [{elapsed}]")
+        .unwrap());
+    pb.enable_steady_tick(Duration::from_millis(100));
 
-            // Check parent path too — to catch '**/dir/**'
-            for ancestor in path.ancestors() {
-                if exclude_matcher.is_match(ancestor) {
-                    return false;
-                }
-            }
+    let (file_data, sorted_dirs) = scan_files_and_dirs(root, &args, &exclude_matcher, args.sort);
 
-            true
-        })
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_file())
-        .collect();
+    // Step 5: Print CSV output
+    let mut csv_entries = Vec::new();
 
-    // Step 2: Collect sizes
-    let file_data: Vec<(PathBuf, u64)> = entries
-        .par_iter()
-        .map(|entry| {
-            let path = entry.path().to_path_buf();
-            let size = disk_usage(&path);
-            (path, size)
-        })
-        .collect();
-
-    // Step 3: Aggregate sizes per directory
-    let mut dir_totals: HashMap<PathBuf, u64> = HashMap::new();
-    for (file_path, size) in &file_data {
-        let mut current = file_path.parent();
-        while let Some(path) = current {
-            *dir_totals.entry(path.to_path_buf()).or_insert(0) += size;
-            if path == root {
-                break;
-            }
-            current = path.parent();
-        }
-    }
-
-    // Step 4: Sort directories
-    let mut sorted_dirs: Vec<_> = dir_totals.iter().collect();
-    match args.sort {
-        SortKey::Size => sorted_dirs.sort_by(|a, b| b.1.cmp(a.1)),
-        SortKey::Name => sorted_dirs.sort_by_key(|(k, _)| (*k).clone()),
-    }
-
-    // Step 5: Print directories within depth
+    // For directories
     for (dir, size) in &sorted_dirs {
-        if args
-            .depth
-            .map(|d| path_depth(root, dir) > d)
-            .unwrap_or(false) {
+        if args.depth.map(|d| path_depth(root, dir) > d).unwrap_or(false) {
             continue;
         }
     
         let owner = if args.show_owner {
             get_owner(dir)
-                .unwrap_or_else(|| "unknown".to_string())
         } else {
-            "".to_string()
+            None
         };
     
-        println!(
-            "[DIR]  {:<12} {:<10} {}",
-            format_size(**size, DECIMAL),
+        csv_entries.push(CsvEntry {
+            entry_type: "DIR".into(),
+            size_bytes: *size,
+            size_human: format_size(*size, DECIMAL),
             owner,
-            dir.strip_prefix(root).unwrap_or(dir).display()
-        );
+            path: dir.display().to_string(),
+        });
     }
 
-    // Step 6: Print files at exact depth (not parent!)
+    // For files
     if args.show_files {
         for (file_path, size) in &file_data {
-            if args
-                .depth
-                .map(|d| path_depth(root, file_path) != d)
-                .unwrap_or(true) {
+            if args.depth.map(|d| path_depth(root, file_path) != d).unwrap_or(false) {
                 continue;
             }
     
             let owner = if args.show_owner {
                 get_owner(file_path)
-                    .unwrap_or_else(|| "unknown".to_string())
+            } else {
+                None
+            };
+    
+            csv_entries.push(CsvEntry {
+                entry_type: "FILE".into(),
+                size_bytes: *size,
+                size_human: format_size(*size, DECIMAL),
+                owner,
+                path: file_path.display().to_string(),
+            });
+        }
+    }
+
+    if let Some(csv_path) = &args.output {
+        let file = File::create(csv_path)?;
+        let mut writer = Writer::from_writer(file);
+        for row in &csv_entries {
+            writer.serialize(row)?;
+        }
+        writer.flush()?;
+        println!("Output saved to: {}", csv_path);
+    }
+
+    // Step 5: Print directories within depth
+    if args.output.is_none() {
+        for (dir, size) in &sorted_dirs {
+            if args.depth.map(|d| path_depth(root, dir) > d).unwrap_or(false) {
+                continue;
+            }
+    
+            let owner = if args.show_owner {
+                get_owner(dir).unwrap_or_else(|| "unknown".to_string())
+            } else {
+                "".to_string()
+            };
+    
+            println!(
+                "[DIR]  {:<12} {:<10} {}",
+                format_size(*size, DECIMAL),
+                owner,
+                dir.strip_prefix(root).unwrap_or(dir).display()
+            );
+        }
+    }
+
+    // Step 6: Print files at exact depth (not parent!)
+    if args.output.is_none() && args.show_files {
+        for (file, size) in &file_data {
+            if args.depth.map(|d| path_depth(root, file) != d).unwrap_or(false) {
+                continue;
+            }
+    
+            let owner = if args.show_owner {
+                get_owner(file).unwrap_or_else(|| "unknown".to_string())
             } else {
                 "".to_string()
             };
@@ -169,8 +167,9 @@ fn main() {
                 "[FILE] {:<12} {:<10} {}",
                 format_size(*size, DECIMAL),
                 owner,
-                file_path.strip_prefix(root).unwrap_or(file_path).display()
+                file.strip_prefix(root).unwrap_or(file).display()
             );
         }
     }
+    Ok(())
 }
