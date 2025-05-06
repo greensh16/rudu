@@ -28,9 +28,9 @@ While `du` has been a reliable tool for decades, it's single-threaded, limited i
 - ✅ Optional file listing (`--show-files=true|false`)
 - ✅ `[DIR]` and `[FILE]` labels for clear output
 - ✅ Cross-platform compatible (POSIX-style filesystem; currently optimized for Unix-like systems)
-- ✅ Option to exclude specific directories and files (--exclude .git, excepts globbed .g*). 
-- ✅ Option to show directory and file ownership (--show-owner)
-- ✅ Option to output to csv file (--output report.csv)
+- ✅ Option to exclude specific directories and files (`--exclude .git, excepts globbed .g*`)
+- ✅ Option to show directory and file ownership (`--show-owner`)
+- ✅ Option to output to csv file (`--output report.csv`)
 ---
 
 ## Example Usage
