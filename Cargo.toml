@@ -1,6 +1,6 @@
 [package]
 name = "rudu"
-version = "1.1.0"
+version = "1.2.0"
 authors = ["Sam Green"]
 edition = "2021"
 repository = "https://github.com/greensh16/rudu"

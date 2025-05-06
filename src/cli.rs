@@ -22,7 +22,7 @@ use std::path::PathBuf;
 
 /// Rust-powered disk usage calculator (like `du`, but faster and safer)
 #[derive(Parser, Debug)]
-#[command(name = "rudu", author = "Sam Green", version = "1.1.0", about)]
+#[command(name = "rudu", author = "Sam Green", version = "1.2.0", about)]
 pub struct Args {
     /// Path to scan (defaults to current directory)
     #[arg(default_value = ".")]
