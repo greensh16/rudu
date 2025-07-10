@@ -24,7 +24,15 @@ num_cpus = "1.16"
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 tempfile = "3.8"
+jemalloc-ctl = "0.5"
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+procfs = "0.16"
 
 [[bench]]
 name = "scan_benchmark"
+harness = false
+
+[[bench]]
+name = "profiling"
 harness = false
