@@ -24,27 +24,121 @@
 //! - [`scan`] - file system traversal and size aggregation
 //! - [`utils`] - helpers for file metadata, ownership, and pattern matching
 
+use anyhow::{Context, Result};
 use clap::Parser;
+use csv::Writer;
 use humansize::{format_size, DECIMAL};
 use std::fs::File;
-use csv::Writer;
-use anyhow::Result;
+use std::path::Path;
 
 mod utils;
-use utils::{path_depth, get_owner, expand_exclude_patterns, build_exclude_matcher};
+use utils::{build_exclude_matcher, expand_exclude_patterns, path_depth};
 mod scan;
 use scan::scan_files_and_dirs;
-mod cli;
+pub mod cli;
 use cli::{Args, CsvEntry};
- 
+mod data;
+pub use data::{EntryType, FileEntry};
+pub mod output;
+
+/// Sets up the thread pool configuration based on CLI arguments.
+fn setup_thread_pool(args: &Args) -> Result<()> {
+    if let Some(n_threads) = args.threads {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(n_threads)
+            .build_global()
+            .context("Failed to configure thread pool")?;
+        println!("🔧 Using {} CPU thread(s)", n_threads);
+    } else {
+        println!("🔧 Using all {} available CPU threads", num_cpus::get());
+    }
+    Ok(())
+}
+
+/// Processes raw file entries by applying depth filtering, sorting, and show_files flags.
+fn process_entries(root: &Path, args: &Args, raw: Vec<FileEntry>) -> Vec<FileEntry> {
+    raw.into_iter()
+        .filter(|entry| {
+            // Apply depth filtering
+            let depth = path_depth(root, &entry.path);
+            match entry.entry_type {
+                EntryType::Dir => args.depth.map(|d| depth <= d).unwrap_or(true),
+                EntryType::File => {
+                    args.show_files && args.depth.map(|d| depth == d).unwrap_or(true)
+                }
+            }
+        })
+        .collect()
+}
+
+/// Outputs the results either to CSV file or terminal based on CLI arguments.
+fn output_results(entries: &[FileEntry], args: &Args, root: &Path) -> Result<()> {
+    if let Some(csv_path) = &args.output {
+        // CSV output
+        let file = File::create(csv_path)?;
+        let mut writer = Writer::from_writer(file);
+
+        for entry in entries {
+            let csv_entry = CsvEntry {
+                entry_type: entry.entry_type.as_str().into(),
+                size_bytes: entry.size,
+                size_human: format_size(entry.size, DECIMAL),
+                owner: entry.owner.clone(),
+                path: entry.path.display().to_string(),
+                inodes: entry.inodes,
+            };
+            writer.serialize(csv_entry)?;
+        }
+        writer.flush()?;
+        println!("Output saved to: {}", csv_path);
+    } else {
+        // Terminal output
+        for entry in entries {
+            let owner = if args.show_owner {
+                entry.owner.clone().unwrap_or_else(|| "unknown".to_string())
+            } else {
+                "".to_string()
+            };
+
+            match entry.entry_type {
+                EntryType::Dir => {
+                    println!(
+                        "[DIR]  {:<12} {:<10} {:<6} {}",
+                        format_size(entry.size, DECIMAL),
+                        owner,
+                        entry.inodes.unwrap_or(0),
+                        entry
+                            .path
+                            .strip_prefix(root)
+                            .unwrap_or(&entry.path)
+                            .display()
+                    );
+                }
+                EntryType::File => {
+                    println!(
+                        "[FILE] {:<12} {:<10} {}",
+                        format_size(entry.size, DECIMAL),
+                        owner,
+                        entry
+                            .path
+                            .strip_prefix(root)
+                            .unwrap_or(&entry.path)
+                            .display()
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
     let root = &args.path;
-    let expanded_patterns = expand_exclude_patterns(&args.exclude);
-    let exclude_matcher = build_exclude_matcher(&expanded_patterns);
 
+    // Print banner
     println!(
-    r#"
+        r#"
 ------------------------------------------------------------------
         .______       __    __   _______   __    __  
         |   _  \     |  |  |  | |       \ |  |  |  | 
@@ -55,123 +149,17 @@ fn main() -> Result<()> {
                     Rust-based du tool
 ------------------------------------------------------------------            
                     "#
-        );
+    );
 
-    // Set-up CPU threads
-    if let Some(n_threads) = args.threads {
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(n_threads)
-            .build_global()
-            .expect("Failed to configure thread pool");
-        println!("🔧 Using {} CPU thread(s)", n_threads);
-    } else {
-        println!(
-            "🔧 Using all {} available CPU threads",
-            num_cpus::get()
-        );
-    }
+    // Parse args → setup_thread_pool → scan_files_and_dirs → process_entries → output_results
+    setup_thread_pool(&args)?;
 
-    let (file_data, sorted_dirs) = scan_files_and_dirs(root, &args, &exclude_matcher, args.sort);
+    let expanded_patterns = expand_exclude_patterns(&args.exclude);
+    let exclude_matcher = build_exclude_matcher(&expanded_patterns)?;
 
-    // Step 5: Print CSV output
-    let mut csv_entries = Vec::new();
+    let raw_entries = scan_files_and_dirs(root, &args, &exclude_matcher, args.sort)?;
+    let processed_entries = process_entries(root, &args, raw_entries);
+    output_results(&processed_entries, &args, root)?;
 
-    // For directories
-    for (dir, size) in &sorted_dirs {
-        if args.depth.map(|d| path_depth(root, dir) > d).unwrap_or(false) {
-            continue;
-        }
-    
-        let owner = if args.show_owner {
-            get_owner(dir)
-        } else {
-            None
-        };
-    
-        csv_entries.push(CsvEntry {
-            entry_type: "DIR".into(),
-            size_bytes: *size,
-            size_human: format_size(*size, DECIMAL),
-            owner,
-            path: dir.display().to_string(),
-        });
-    }
-
-    // For files
-    if args.show_files {
-        for (file_path, size) in &file_data {
-            if args.depth.map(|d| path_depth(root, file_path) != d).unwrap_or(false) {
-                continue;
-            }
-    
-            let owner = if args.show_owner {
-                get_owner(file_path)
-            } else {
-                None
-            };
-    
-            csv_entries.push(CsvEntry {
-                entry_type: "FILE".into(),
-                size_bytes: *size,
-                size_human: format_size(*size, DECIMAL),
-                owner,
-                path: file_path.display().to_string(),
-            });
-        }
-    }
-
-    if let Some(csv_path) = &args.output {
-        let file = File::create(csv_path)?;
-        let mut writer = Writer::from_writer(file);
-        for row in &csv_entries {
-            writer.serialize(row)?;
-        }
-        writer.flush()?;
-        println!("Output saved to: {}", csv_path);
-    }
-
-    // Step 5: Print directories within depth
-    if args.output.is_none() {
-        for (dir, size) in &sorted_dirs {
-            if args.depth.map(|d| path_depth(root, dir) > d).unwrap_or(false) {
-                continue;
-            }
-    
-            let owner = if args.show_owner {
-                get_owner(dir).unwrap_or_else(|| "unknown".to_string())
-            } else {
-                "".to_string()
-            };
-    
-            println!(
-                "[DIR]  {:<12} {:<10} {}",
-                format_size(*size, DECIMAL),
-                owner,
-                dir.strip_prefix(root).unwrap_or(dir).display()
-            );
-        }
-    }
-
-    // Step 6: Print files at exact depth (not parent!)
-    if args.output.is_none() && args.show_files {
-        for (file, size) in &file_data {
-            if args.depth.map(|d| path_depth(root, file) != d).unwrap_or(false) {
-                continue;
-            }
-    
-            let owner = if args.show_owner {
-                get_owner(file).unwrap_or_else(|| "unknown".to_string())
-            } else {
-                "".to_string()
-            };
-    
-            println!(
-                "[FILE] {:<12} {:<10} {}",
-                format_size(*size, DECIMAL),
-                owner,
-                file.strip_prefix(root).unwrap_or(file).display()
-            );
-        }
-    }
     Ok(())
 }

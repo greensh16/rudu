@@ -20,7 +20,25 @@
 use clap::{Parser, ValueEnum};
 use std::path::PathBuf;
 
-/// Rust-powered disk usage calculator (like `du`, but faster and safer)
+/// Command-line arguments for the `rudu` disk usage calculator.
+///
+/// This struct defines all available command-line options and flags
+/// for controlling the behavior of the file system scan and output formatting.
+///
+/// # Examples
+///
+/// ```rust
+/// use rudu::Args;
+/// use clap::Parser;
+///
+/// // Parse arguments from command line
+/// let args = Args::parse();
+///
+/// // Check if CSV output is requested
+/// if args.output.is_some() {
+///     println!("CSV output enabled");
+/// }
+/// ```
 #[derive(Parser, Debug)]
 #[command(name = "rudu", author = "Sam Green", version = "1.2.0", about)]
 pub struct Args {
@@ -55,20 +73,38 @@ pub struct Args {
     /// Limit the number of CPU threads used (default: use all available)
     #[arg(long, value_name = "N")]
     pub threads: Option<usize>,
+
+    /// Show inode usage (i.e., number of files/subdirectories in each dir)
+    #[arg(long, default_value_t = false)]
+    pub show_inodes: bool,
 }
 
+/// Enum for specifying how to sort scan results.
+///
+/// # Variants
+/// * `Name` - Sort entries alphabetically by path name
+/// * `Size` - Sort entries by size in descending order (largest first)
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
 pub enum SortKey {
     Name,
     Size,
 }
 
-/// A single record of output (used for CSV serialization)
+/// A single record of output (used for CSV serialization).
+///
+/// # Fields
+/// * `entry_type` - "DIR" or "FILE"
+/// * `size_bytes` - Size in bytes
+/// * `size_human` - Human-readable size (e.g., "1.2 MB")
+/// * `owner` - Optional owner username
+/// * `path` - Full path to the file or directory
+/// * `inodes` - Optional inode count for directories
 #[derive(Debug, serde::Serialize)]
 pub struct CsvEntry {
-    pub entry_type: String, // "DIR" or "FILE"
+    pub entry_type: String,
     pub size_bytes: u64,
     pub size_human: String,
     pub owner: Option<String>,
     pub path: String,
+    pub inodes: Option<u64>,
 }
