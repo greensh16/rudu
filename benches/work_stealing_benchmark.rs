@@ -129,6 +129,7 @@ fn work_stealing_benchmark(c: &mut Criterion) {
             threads_strategy: strategy,
             no_cache: false,
             cache_ttl: 604800,
+            profile: false,
         };
 
         let exclude_matcher = build_exclude_matcher(&[]).unwrap();
@@ -163,6 +164,7 @@ fn work_stealing_benchmark(c: &mut Criterion) {
             threads_strategy: strategy,
             no_cache: false,
             cache_ttl: 604800,
+            profile: false,
         };
 
         group.bench_with_input(
@@ -214,6 +216,7 @@ fn work_stealing_scalability_benchmark(c: &mut Criterion) {
             threads_strategy: ThreadPoolStrategy::Default,
             no_cache: false,
             cache_ttl: 604800,
+            profile: false,
         };
 
         // Test work-stealing strategy
@@ -230,6 +233,7 @@ fn work_stealing_scalability_benchmark(c: &mut Criterion) {
             threads_strategy: ThreadPoolStrategy::WorkStealingUneven,
             no_cache: false,
             cache_ttl: 604800,
+            profile: false,
         };
 
         let exclude_matcher = build_exclude_matcher(&[]).unwrap();

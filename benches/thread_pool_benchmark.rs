@@ -144,6 +144,7 @@ fn thread_pool_benchmark(c: &mut Criterion) {
                             threads_strategy: param.strategy,
                             no_cache: false,
                             cache_ttl: 604800,
+                            profile: false,
                         },
                     ),
                     "io_heavy" => (
@@ -161,6 +162,7 @@ fn thread_pool_benchmark(c: &mut Criterion) {
                             threads_strategy: param.strategy,
                             no_cache: false,
                             cache_ttl: 604800,
+                            profile: false,
                         },
                     ),
                     "deep" => (
@@ -178,6 +180,7 @@ fn thread_pool_benchmark(c: &mut Criterion) {
                             threads_strategy: param.strategy,
                             no_cache: false,
                             cache_ttl: 604800,
+                            profile: false,
                         },
                     ),
                     _ => unreachable!(),
@@ -246,6 +249,7 @@ fn strategy_comparison_benchmark(c: &mut Criterion) {
             threads_strategy: strategy,
             no_cache: false,
             cache_ttl: 604800,
+            profile: false,
         };
 
         let exclude_matcher = build_exclude_matcher(&[]).unwrap();

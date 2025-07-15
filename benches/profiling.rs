@@ -118,6 +118,7 @@ fn create_args(path: PathBuf) -> Args {
         threads_strategy: ThreadPoolStrategy::Default,
         no_cache: false,
         cache_ttl: 604800, // 7 days
+        profile: false,
     }
 }
 

@@ -137,7 +137,7 @@ fn benchmark_scan_small_directory(c: &mut Criterion) {
         threads_strategy: ThreadPoolStrategy::Default,
         no_cache: false,
         cache_ttl: 604800, // 7 days
-        profile: None,
+        profile: false,
     };
 
     let exclude_matcher = build_exclude_matcher(&[]).unwrap();
@@ -175,7 +175,7 @@ fn benchmark_scan_deep_directory(c: &mut Criterion) {
         threads_strategy: ThreadPoolStrategy::Default,
         no_cache: false,
         cache_ttl: 604800, // 7 days
-        profile: None,
+        profile: false,
     };
 
     let exclude_matcher = build_exclude_matcher(&[]).unwrap();
@@ -213,7 +213,7 @@ fn benchmark_scan_with_owner_info(c: &mut Criterion) {
         threads_strategy: ThreadPoolStrategy::Default,
         no_cache: false,
         cache_ttl: 604800, // 7 days
-        profile: None,
+        profile: false,
     };
 
     let exclude_matcher = build_exclude_matcher(&[]).unwrap();
@@ -252,7 +252,7 @@ fn benchmark_scan_with_cache_hit(c: &mut Criterion) {
         threads_strategy: ThreadPoolStrategy::Default,
         no_cache: false,
         cache_ttl: 604800, // 7 days
-        profile: None,
+        profile: false,
     };
 
     // Create and populate cache
@@ -294,7 +294,7 @@ fn benchmark_scan_with_cache_miss(c: &mut Criterion) {
         threads_strategy: ThreadPoolStrategy::Default,
         no_cache: false,
         cache_ttl: 604800, // 7 days
-        profile: None,
+        profile: false,
     };
 
     // Create and populate cache
@@ -343,7 +343,7 @@ fn benchmark_scan_incremental_deep(c: &mut Criterion) {
         threads_strategy: ThreadPoolStrategy::Default,
         no_cache: false,
         cache_ttl: 604800, // 7 days
-        profile: None,
+        profile: false,
     };
 
     // Create and populate cache
