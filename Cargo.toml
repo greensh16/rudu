@@ -29,8 +29,6 @@ chrono = { version = "0.4", features = ["serde"] }
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 tempfile = "3.8"
-<<<<<<< Updated upstream
-=======
 jemalloc-ctl = "0.5"
 walkdir = "2.5"
 # Memory benchmarking - using criterion fork with memory tracking
@@ -38,13 +36,10 @@ walkdir = "2.5"
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 procfs = "0.16"
->>>>>>> Stashed changes
 
 [[bench]]
 name = "scan_benchmark"
 harness = false
-<<<<<<< Updated upstream
-=======
 
 [[bench]]
 name = "profiling"
@@ -61,4 +56,3 @@ harness = false
 [[bench]]
 name = "memory_benchmark"
 harness = false
->>>>>>> Stashed changes
