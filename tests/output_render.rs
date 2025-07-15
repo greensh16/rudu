@@ -1,8 +1,8 @@
 use rudu::cli::{Args, SortKey};
 use rudu::data::{EntryType, FileEntry};
 use rudu::output::{csv, terminal};
+use rudu::thread_pool::ThreadPoolStrategy;
 use std::path::PathBuf;
-
 #[test]
 fn test_csv_rendering() {
     let entries = vec![FileEntry {
@@ -23,6 +23,10 @@ fn test_csv_rendering() {
         output: None,
         threads: None,
         show_inodes: true,
+        threads_strategy: ThreadPoolStrategy::Default,
+        no_cache: false,
+        cache_ttl: 604800,
+        profile: false,
     };
 
     let result = csv::render(&entries, &args);
@@ -49,6 +53,10 @@ fn test_terminal_rendering() {
         output: None,
         threads: None,
         show_inodes: true,
+        threads_strategy: ThreadPoolStrategy::Default,
+        no_cache: false,
+        cache_ttl: 604800,
+        profile: false,
     };
 
     let result = terminal::render(&entries, &args);

@@ -17,6 +17,7 @@
 //! # Dependencies
 //! - [`clap`] for argument parsing and help generation
 
+use crate::thread_pool::ThreadPoolStrategy;
 use clap::{Parser, ValueEnum};
 use std::path::PathBuf;
 
@@ -40,7 +41,7 @@ use std::path::PathBuf;
 /// }
 /// ```
 #[derive(Parser, Debug)]
-#[command(name = "rudu", author = "Sam Green", version = "1.2.0", about)]
+#[command(name = "rudu", author = "Sam Green", version = "1.3.0", about)]
 pub struct Args {
     /// Path to scan (defaults to current directory)
     #[arg(default_value = ".")]
@@ -77,6 +78,22 @@ pub struct Args {
     /// Show inode usage (i.e., number of files/subdirectories in each dir)
     #[arg(long, default_value_t = false)]
     pub show_inodes: bool,
+
+    /// Thread pool strategy for performance optimization (hidden experimental flag)
+    #[arg(long = "threads-strategy", value_enum, default_value_t = ThreadPoolStrategy::Default, hide = true)]
+    pub threads_strategy: ThreadPoolStrategy,
+
+    /// Disable caching and force a full rescan
+    #[arg(long, default_value_t = false)]
+    pub no_cache: bool,
+
+    /// Cache TTL in seconds (default: 604800 = 7 days)
+    #[arg(long, default_value_t = 604800)]
+    pub cache_ttl: u64,
+
+    /// Enable performance profiling and show timing summary
+    #[arg(long, default_value_t = false)]
+    pub profile: bool,
 }
 
 /// Enum for specifying how to sort scan results.

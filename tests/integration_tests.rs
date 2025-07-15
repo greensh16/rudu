@@ -1,5 +1,6 @@
 use rudu::cli::{Args, SortKey};
 use rudu::scan::scan_files_and_dirs;
+use rudu::thread_pool::ThreadPoolStrategy;
 use rudu::utils::{build_exclude_matcher, expand_exclude_patterns};
 use std::fs;
 use tempfile::TempDir;
@@ -47,6 +48,10 @@ fn test_inode_counting_with_tempdir() {
         output: None,
         threads: None,
         show_inodes: true,
+        threads_strategy: ThreadPoolStrategy::Default,
+        no_cache: false,
+        cache_ttl: 604800,
+        profile: false,
     };
 
     let exclude_patterns = expand_exclude_patterns(&args.exclude);
@@ -58,18 +63,21 @@ fn test_inode_counting_with_tempdir() {
         .expect("Failed to scan directory");
 
     // Verify the results
-    assert!(!entries.is_empty());
+    assert!(!entries.entries.is_empty());
 
     // Find directory entries and verify inode counts
     let dir1_entry = entries
+        .entries
         .iter()
         .find(|e| e.path == dir1)
         .expect("dir1 not found");
     let dir2_entry = entries
+        .entries
         .iter()
         .find(|e| e.path == dir2)
         .expect("dir2 not found");
     let subdir_entry = entries
+        .entries
         .iter()
         .find(|e| e.path == subdir)
         .expect("subdir not found");
@@ -85,6 +93,7 @@ fn test_inode_counting_with_tempdir() {
 
     // Verify all files are present
     let file_paths: Vec<_> = entries
+        .entries
         .iter()
         .filter(|e| e.entry_type == rudu::data::EntryType::File)
         .map(|e| e.path.file_name().unwrap().to_str().unwrap())
@@ -138,6 +147,10 @@ fn test_exclude_patterns_with_tempdir() {
         output: None,
         threads: None,
         show_inodes: true,
+        threads_strategy: ThreadPoolStrategy::Default,
+        no_cache: false,
+        cache_ttl: 604800,
+        profile: false,
     };
 
     let exclude_patterns = expand_exclude_patterns(&args.exclude);
@@ -149,7 +162,7 @@ fn test_exclude_patterns_with_tempdir() {
         .expect("Failed to scan directory");
 
     // Verify that excluded directories are not present
-    let paths: Vec<_> = entries.iter().map(|e| &e.path).collect();
+    let paths: Vec<_> = entries.entries.iter().map(|e| &e.path).collect();
 
     assert!(!paths.contains(&&node_modules));
     assert!(!paths.contains(&&target));
@@ -160,6 +173,7 @@ fn test_exclude_patterns_with_tempdir() {
 
     // Verify that files in excluded directories are not present
     let file_names: Vec<_> = entries
+        .entries
         .iter()
         .filter(|e| e.entry_type == rudu::data::EntryType::File)
         .map(|e| e.path.file_name().unwrap().to_str().unwrap())
@@ -210,6 +224,10 @@ fn test_depth_filtering_with_tempdir() {
         output: None,
         threads: None,
         show_inodes: true,
+        threads_strategy: ThreadPoolStrategy::Default,
+        no_cache: false,
+        cache_ttl: 604800,
+        profile: false,
     };
 
     let exclude_patterns = expand_exclude_patterns(&args.exclude);
@@ -222,7 +240,7 @@ fn test_depth_filtering_with_tempdir() {
 
     // Filter entries using our utility function
     let filtered_entries =
-        rudu::utils::filter_by_depth(&entries, root_path, args.depth, args.show_files);
+        rudu::utils::filter_by_depth(&entries.entries, root_path, args.depth, args.show_files);
 
     // Verify that level3 directory is not included (depth > 2)
     let paths: Vec<_> = filtered_entries.iter().map(|e| &e.path).collect();
@@ -267,6 +285,10 @@ fn test_size_calculation_with_tempdir() {
         output: None,
         threads: None,
         show_inodes: false,
+        threads_strategy: ThreadPoolStrategy::Default,
+        no_cache: false,
+        cache_ttl: 604800,
+        profile: false,
     };
 
     let exclude_patterns = expand_exclude_patterns(&args.exclude);
@@ -279,6 +301,7 @@ fn test_size_calculation_with_tempdir() {
 
     // Find file entries
     let file_entries: Vec<_> = entries
+        .entries
         .iter()
         .filter(|e| e.entry_type == rudu::data::EntryType::File)
         .collect();

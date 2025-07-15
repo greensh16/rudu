@@ -27,7 +27,7 @@ pub struct FileEntry {
 /// # Variants
 /// * `File` - A regular file
 /// * `Dir` - A directory
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum EntryType {
     File,
     Dir,
