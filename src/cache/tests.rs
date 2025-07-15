@@ -6,31 +6,40 @@ use crate::data::EntryType;
 use std::collections::HashMap;
 use tempfile::tempdir;
 
+/// Sets up a unique temporary cache directory for each test to prevent cross-test interference.
+/// This function creates a temporary directory and sets the RUDU_CACHE_DIR environment variable
+/// to point to it, ensuring each test gets its own isolated cache space.
+fn setup_temp_cache_dir() -> std::io::Result<tempfile::TempDir> {
+    let dir = tempfile::tempdir()?;
+    std::env::set_var("RUDU_CACHE_DIR", dir.path());
+    Ok(dir)
+}
+
 #[test]
 fn test_load_cache_nonexistent() {
-    let temp_dir = tempdir().unwrap();
+    let temp_dir = setup_temp_cache_dir().unwrap();
     let nonexistent_path = temp_dir.path().join("nonexistent");
 
     let result = load_cache(&nonexistent_path, 604800);
-    assert!(result.is_none());
+    assert!(result.is_empty());
 }
 
 #[test]
 fn test_save_and_load_cache_empty() {
-    let temp_dir = tempdir().unwrap();
+    let temp_dir = setup_temp_cache_dir().unwrap();
     let cache = HashMap::new();
 
     // Save empty cache
     save_cache(temp_dir.path(), &cache).unwrap();
 
     // Load it back
-    let loaded = load_cache(temp_dir.path(), 604800).unwrap();
+    let loaded = load_cache(temp_dir.path(), 604800);
     assert_eq!(loaded.len(), 0);
 }
 
 #[test]
 fn test_save_and_load_cache_with_entries() {
-    let temp_dir = tempdir().unwrap();
+    let temp_dir = setup_temp_cache_dir().unwrap();
     let mut cache = HashMap::new();
 
     // Create some test entries
@@ -63,7 +72,7 @@ fn test_save_and_load_cache_with_entries() {
     save_cache(temp_dir.path(), &cache).unwrap();
 
     // Load it back
-    let loaded = load_cache(temp_dir.path(), 604800).unwrap();
+    let loaded = load_cache(temp_dir.path(), 604800);
     assert_eq!(loaded.len(), 2);
 
     // Verify entries are preserved
@@ -80,7 +89,7 @@ fn test_save_and_load_cache_with_entries() {
 
 #[test]
 fn test_save_and_load_large_cache() {
-    let temp_dir = tempdir().unwrap();
+    let temp_dir = setup_temp_cache_dir().unwrap();
     let mut cache = HashMap::new();
 
     // Create a large cache with many entries
@@ -107,7 +116,7 @@ fn test_save_and_load_large_cache() {
     save_cache(temp_dir.path(), &cache).unwrap();
 
     // Load it back
-    let loaded = load_cache(temp_dir.path(), 604800).unwrap();
+    let loaded = load_cache(temp_dir.path(), 604800);
     assert_eq!(loaded.len(), 10000);
 
     // Verify a few random entries
@@ -118,7 +127,7 @@ fn test_save_and_load_large_cache() {
 
 #[test]
 fn test_memory_mapped_io_performance() {
-    let temp_dir = tempdir().unwrap();
+    let temp_dir = setup_temp_cache_dir().unwrap();
     let mut cache = HashMap::new();
 
     // Create a moderately large cache
@@ -144,7 +153,7 @@ fn test_memory_mapped_io_performance() {
 
     // Load cache
     let start = std::time::Instant::now();
-    let loaded = load_cache(temp_dir.path(), 604800).unwrap();
+    let loaded = load_cache(temp_dir.path(), 604800);
     let load_duration = start.elapsed();
 
     // Verify correctness
@@ -158,7 +167,7 @@ fn test_memory_mapped_io_performance() {
 
 #[test]
 fn test_cache_file_corruption_handling() {
-    let temp_dir = tempdir().unwrap();
+    let temp_dir = setup_temp_cache_dir().unwrap();
     let cache_path = temp_dir.path().join(".rudu-cache.bin");
 
     // Create a corrupted cache file
@@ -166,7 +175,7 @@ fn test_cache_file_corruption_handling() {
 
     // Loading should return None for corrupted cache
     let result = load_cache(temp_dir.path(), 604800);
-    assert!(result.is_none());
+    assert!(result.is_empty());
 }
 
 #[test]
@@ -186,7 +195,7 @@ fn test_cache_directory_creation() {
     save_cache(&nested_path, &cache).unwrap();
 
     // Verify cache was saved
-    let loaded = load_cache(&nested_path, 604800).unwrap();
+    let loaded = load_cache(&nested_path, 604800);
     assert_eq!(loaded.len(), 0);
     
     // Restore the original environment variable
@@ -198,8 +207,13 @@ fn test_cache_directory_creation() {
 
 #[test]
 fn test_entry_validation() {
-    let temp_dir = tempdir().unwrap();
+    let temp_dir = setup_temp_cache_dir().unwrap();
     let mut cache = HashMap::new();
+
+    // Save the original XDG_CACHE_HOME
+    let original_xdg_cache_home = std::env::var("XDG_CACHE_HOME").ok();
+    
+    std::env::set_var("XDG_CACHE_HOME", temp_dir.path().join("cache"));
 
     let entry = CacheEntry::new(
         12345,
@@ -216,7 +230,7 @@ fn test_entry_validation() {
 
     // Save and load
     save_cache(temp_dir.path(), &cache).unwrap();
-    let loaded = load_cache(temp_dir.path(), 604800).unwrap();
+    let loaded = load_cache(temp_dir.path(), 604800);
 
     let loaded_entry = loaded.get(&PathBuf::from("test.txt")).unwrap();
 
@@ -224,12 +238,23 @@ fn test_entry_validation() {
     assert!(loaded_entry.is_valid(1234567890, 2)); // Valid mtime and nlink
     assert!(!loaded_entry.is_valid(1234567891, 2)); // Different mtime
     assert!(!loaded_entry.is_valid(1234567890, 3)); // Different nlink
+    
+    // Restore the original environment variable
+    match original_xdg_cache_home {
+        Some(value) => std::env::set_var("XDG_CACHE_HOME", value),
+        None => std::env::remove_var("XDG_CACHE_HOME"),
+    }
 }
 
 #[test]
 fn test_cache_with_complex_paths() {
-    let temp_dir = tempdir().unwrap();
+    let temp_dir = setup_temp_cache_dir().unwrap();
     let mut cache = HashMap::new();
+
+    // Save the original XDG_CACHE_HOME
+    let original_xdg_cache_home = std::env::var("XDG_CACHE_HOME").ok();
+    
+    std::env::set_var("XDG_CACHE_HOME", temp_dir.path().join("cache"));
 
     // Test with complex path names
     let paths = vec![
@@ -262,7 +287,7 @@ fn test_cache_with_complex_paths() {
     save_cache(temp_dir.path(), &cache).unwrap();
 
     // Load it back
-    let loaded = load_cache(temp_dir.path(), 604800).unwrap();
+    let loaded = load_cache(temp_dir.path(), 604800);
     assert_eq!(loaded.len(), paths.len());
 
     // Verify all paths are preserved correctly
@@ -271,12 +296,23 @@ fn test_cache_with_complex_paths() {
         assert_eq!(loaded_entry.size, ((i + 1) * 1024) as u64);
         assert_eq!(loaded_entry.mtime, 1234567890 + i as u64);
     }
+    
+    // Restore the original environment variable
+    match original_xdg_cache_home {
+        Some(value) => std::env::set_var("XDG_CACHE_HOME", value),
+        None => std::env::remove_var("XDG_CACHE_HOME"),
+    }
 }
 
 #[test]
 fn test_cache_with_unicode_paths() {
-    let temp_dir = tempdir().unwrap();
+    let temp_dir = setup_temp_cache_dir().unwrap();
     let mut cache = HashMap::new();
+
+    // Save the original XDG_CACHE_HOME
+    let original_xdg_cache_home = std::env::var("XDG_CACHE_HOME").ok();
+    
+    std::env::set_var("XDG_CACHE_HOME", temp_dir.path().join("cache"));
 
     // Test with Unicode path names
     let unicode_paths = vec![
@@ -307,7 +343,7 @@ fn test_cache_with_unicode_paths() {
     save_cache(temp_dir.path(), &cache).unwrap();
 
     // Load it back
-    let loaded = load_cache(temp_dir.path(), 604800).unwrap();
+    let loaded = load_cache(temp_dir.path(), 604800);
     assert_eq!(loaded.len(), unicode_paths.len());
 
     // Verify all Unicode paths are preserved correctly
@@ -316,11 +352,17 @@ fn test_cache_with_unicode_paths() {
         assert_eq!(loaded_entry.size, ((i + 1) * 1024) as u64);
         assert_eq!(loaded_entry.mtime, 1234567890 + i as u64);
     }
+    
+    // Restore the original environment variable
+    match original_xdg_cache_home {
+        Some(value) => std::env::set_var("XDG_CACHE_HOME", value),
+        None => std::env::remove_var("XDG_CACHE_HOME"),
+    }
 }
 
 #[test]
 fn test_cache_with_zero_size_files() {
-    let temp_dir = tempdir().unwrap();
+    let temp_dir = setup_temp_cache_dir().unwrap();
     let mut cache = HashMap::new();
 
     // Test with zero-size files
@@ -341,7 +383,7 @@ fn test_cache_with_zero_size_files() {
     save_cache(temp_dir.path(), &cache).unwrap();
 
     // Load it back
-    let loaded = load_cache(temp_dir.path(), 604800).unwrap();
+    let loaded = load_cache(temp_dir.path(), 604800);
     assert_eq!(loaded.len(), 1);
 
     let loaded_entry = loaded.get(&PathBuf::from("empty.txt")).unwrap();
@@ -353,7 +395,7 @@ fn test_cache_concurrent_access() {
     use std::sync::Arc;
     use std::thread;
 
-    let temp_dir = tempdir().unwrap();
+    let temp_dir = setup_temp_cache_dir().unwrap();
     let temp_path = Arc::new(temp_dir.path().to_path_buf());
 
     // Create initial cache
@@ -380,7 +422,7 @@ fn test_cache_concurrent_access() {
     for _ in 0..10 {
         let path = Arc::clone(&temp_path);
         let handle = thread::spawn(move || {
-            let loaded = load_cache(&path, 604800).unwrap();
+            let loaded = load_cache(&path, 604800);
             assert_eq!(loaded.len(), 100);
 
             // Verify a few entries
@@ -398,7 +440,7 @@ fn test_cache_concurrent_access() {
 
 #[test]
 fn test_cache_edge_cases() {
-    let temp_dir = tempdir().unwrap();
+    let temp_dir = setup_temp_cache_dir().unwrap();
 
     // Test with empty file name (should work)
     let mut cache = HashMap::new();
@@ -415,7 +457,7 @@ fn test_cache_edge_cases() {
     cache.insert(PathBuf::from(""), entry);
 
     save_cache(temp_dir.path(), &cache).unwrap();
-    let loaded = load_cache(temp_dir.path(), 604800).unwrap();
+    let loaded = load_cache(temp_dir.path(), 604800);
     assert_eq!(loaded.len(), 1);
 
     // Test with very long path
@@ -434,7 +476,7 @@ fn test_cache_edge_cases() {
     cache.insert(long_path.clone(), entry);
 
     save_cache(temp_dir.path(), &cache).unwrap();
-    let loaded = load_cache(temp_dir.path(), 604800).unwrap();
+    let loaded = load_cache(temp_dir.path(), 604800);
     assert_eq!(loaded.len(), 1);
 
     let loaded_entry = loaded.get(&long_path).unwrap();
@@ -444,7 +486,7 @@ fn test_cache_edge_cases() {
 #[test]
 fn test_cache_invalidation_integration() {
     use super::load_cache;
-    let temp_dir = tempdir().unwrap();
+    let temp_dir = setup_temp_cache_dir().unwrap();
     let mut cache = HashMap::new();
 
     // Create a cache entry
@@ -464,12 +506,12 @@ fn test_cache_invalidation_integration() {
     save_cache(temp_dir.path(), &cache).unwrap();
 
     // Test 1: Load with normal TTL should work
-    let loaded = load_cache(temp_dir.path(), 604800).unwrap();
+    let loaded = load_cache(temp_dir.path(), 604800);
     assert_eq!(loaded.len(), 1);
 
     // Test 2: Load with very short TTL should invalidate cache
     // Wait a small moment to ensure the cache is older than TTL
     std::thread::sleep(std::time::Duration::from_millis(10));
     let loaded = load_cache(temp_dir.path(), 0);
-    assert!(loaded.is_none()); // Cache should be invalidated due to TTL=0
+    assert!(loaded.is_empty());
 }
