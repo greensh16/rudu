@@ -414,7 +414,11 @@ fn scan_files_and_dirs_legacy(
                     parent_paths,
                 };
 
-                s.send(job).expect("Failed to send job over channel");
+                // Handle channel send failure gracefully instead of panicking
+                if let Err(_) = s.send(job) {
+                    // Channel receiver dropped, stop processing
+                    return;
+                }
             });
 
         // Collect all scan jobs from the channel

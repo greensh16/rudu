@@ -35,11 +35,15 @@ pub fn disk_usage(path: &Path) -> u64 {
         Err(_) => return 0,
     };
 
-    let mut stat_buf: stat = unsafe { std::mem::zeroed() };
-    if unsafe { libc_stat(c_path.as_ptr(), &mut stat_buf) } != 0 {
+    // Use MaybeUninit to avoid undefined behavior with zeroed stat struct
+    let mut stat_buf = std::mem::MaybeUninit::<stat>::uninit();
+    let result = unsafe { libc_stat(c_path.as_ptr(), stat_buf.as_mut_ptr()) };
+    
+    if result != 0 {
         return 0;
     }
-
+    
+    let stat_buf = unsafe { stat_buf.assume_init() };
     (stat_buf.st_blocks as u64) * 512
 }
 
@@ -99,18 +103,34 @@ pub fn sort_entries(entries: &mut [FileEntry], sort_key: SortKey) {
 /// * `Option<String>` - The username or UID, or None if the path cannot be accessed
 pub fn get_owner(path: &Path) -> Option<String> {
     let c_path = CString::new(path.as_os_str().as_bytes()).ok()?;
-    let mut stat_buf: stat = unsafe { std::mem::zeroed() };
-    if unsafe { libc_stat(c_path.as_ptr(), &mut stat_buf) } != 0 {
+    
+    // Use MaybeUninit to avoid undefined behavior with zeroed stat struct
+    let mut stat_buf = std::mem::MaybeUninit::<stat>::uninit();
+    let result = unsafe { libc_stat(c_path.as_ptr(), stat_buf.as_mut_ptr()) };
+    
+    if result != 0 {
         return None;
     }
-
-    let pw = unsafe { getpwuid(stat_buf.st_uid) };
+    
+    let stat_buf = unsafe { stat_buf.assume_init() };
+    let uid = stat_buf.st_uid;
+    
+    // Safely handle getpwuid which may fail on HPC systems
+    let pw = unsafe { getpwuid(uid) };
     if pw.is_null() {
-        return Some(stat_buf.st_uid.to_string());
+        return Some(uid.to_string());
     }
-
-    let name = unsafe { CStr::from_ptr((*pw).pw_name) };
-    name.to_str().ok().map(String::from)
+    
+    // Additional safety check before dereferencing
+    unsafe {
+        let pw_name = (*pw).pw_name;
+        if pw_name.is_null() {
+            return Some(uid.to_string());
+        }
+        
+        let name = CStr::from_ptr(pw_name);
+        name.to_str().ok().map(String::from)
+    }
 }
 
 /// Expands exclude patterns into common glob forms:
@@ -159,12 +179,16 @@ pub struct DirMetadata {
 /// Get directory metadata (mtime, nlink, size, owner) for caching
 pub fn get_dir_metadata(path: &Path) -> Option<DirMetadata> {
     let c_path = CString::new(path.as_os_str().as_bytes()).ok()?;
-    let mut stat_buf: stat = unsafe { std::mem::zeroed() };
-
-    if unsafe { libc_stat(c_path.as_ptr(), &mut stat_buf) } != 0 {
+    
+    // Use MaybeUninit to avoid undefined behavior with zeroed stat struct
+    let mut stat_buf = std::mem::MaybeUninit::<stat>::uninit();
+    let result = unsafe { libc_stat(c_path.as_ptr(), stat_buf.as_mut_ptr()) };
+    
+    if result != 0 {
         return None;
     }
-
+    
+    let stat_buf = unsafe { stat_buf.assume_init() };
     Some(DirMetadata {
         mtime: stat_buf.st_mtime as u64,
         nlink: stat_buf.st_nlink as u64,

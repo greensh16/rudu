@@ -28,6 +28,9 @@ chrono = { version = "0.4", features = ["serde"] }
 once_cell = "1.10"
 parking_lot = "0.12"
 
+[profile.release]
+strip = true
+
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 tempfile = "3.8"
