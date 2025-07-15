@@ -255,7 +255,7 @@ fn main() -> Result<()> {
         // Save stats.json if output is being written to a file
         if let Some(ref output_path) = args.output {
             if let Err(e) = save_stats_json(std::path::Path::new(output_path), &prof) {
-                eprintln!("⚠️  Failed to save stats.json: {}", e);
+                eprintln!("Failed to save stats.json: {}", e);
             }
         }
     }

@@ -281,7 +281,7 @@ fn scan_with_work_stealing(
             .collect()
     });
     
-    pb.finish_with_message("Work-stealing scan complete ✅");
+    pb.finish_with_message("Work-stealing scan complete");
     
     let mut final_entries = all_entries;
     sort_entries(&mut final_entries, sort_key);
@@ -409,7 +409,7 @@ fn scan_files_and_dirs_legacy(
         rx.into_iter().collect()
     })?;
 
-    pb.finish_with_message("Scan complete ✅");
+    pb.finish_with_message("Scan complete");
 
     // Pre-compute inode counts for directories during initial processing
     // This is more efficient than doing separate walkdir calls later
@@ -519,7 +519,7 @@ pub fn scan_files_and_dirs_incremental(
     // Cache loading phase
     let cache_timer = PhaseTimer::new("Cache-load");
     let cache = if args.no_cache {
-        println!("🚫 Cache disabled, performing full scan");
+        println!("Cache disabled, performing full scan");
         std::collections::HashMap::new()
     } else {
         load_cache(root, args.cache_ttl).unwrap_or_else(|| {
@@ -759,7 +759,7 @@ pub fn scan_files_and_dirs_incremental(
     
     phase_timings.push(aggregation_timer.finish());
     
-    pb.finish_with_message("Incremental scan complete ✅");
+    pb.finish_with_message("Incremental scan complete");
     
     // Print cache statistics
     let hits = cache_hits.load(std::sync::atomic::Ordering::Relaxed);
@@ -774,9 +774,9 @@ pub fn scan_files_and_dirs_incremental(
     // Save updated cache (unless disabled)
     if !args.no_cache {
         if let Err(e) = save_cache_with_mtime(root, &new_cache_entries, root_mtime) {
-            eprintln!("⚠️  Failed to save cache: {}", e);
+            eprintln!("Failed to save cache: {}", e);
         } else {
-            println!("💾 Cache updated with {} entries", new_cache_entries.len());
+            println!("Cache updated with {} entries", new_cache_entries.len());
         }
     }
     

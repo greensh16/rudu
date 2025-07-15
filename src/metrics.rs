@@ -233,7 +233,7 @@ pub fn rss_after_phase() -> Option<u64> {
 /// Cache hits:       8123 / 9000 (90.3 %)
 /// ```
 pub fn print_profile_summary(profile: &ProfileData) {
-    println!("\n📊 Scan phase timings");
+    println!("\nScan phase timings");
     
     for phase in &profile.phases {
         println!("  {:<15} {:>7} ms", phase.name, phase.duration.as_millis());
@@ -298,7 +298,7 @@ pub fn save_stats_json(output_path: &Path, profile: &ProfileData) -> Result<(), 
     
     std::fs::write(&stats_path, serde_json::to_string_pretty(&stats)?)?;
     
-    println!("📈 Performance stats saved to: {}", stats_path.display());
+    println!("Performance stats saved to: {}", stats_path.display());
     
     Ok(())
 }
