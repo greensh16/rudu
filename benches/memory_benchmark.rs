@@ -124,6 +124,7 @@ fn memory_benchmark_small_scan(c: &mut Criterion) {
         threads_strategy: ThreadPoolStrategy::Default,
         no_cache: false,
         cache_ttl: 604800, // 7 days
+        profile: false,
     };
 
     let exclude_matcher = build_exclude_matcher(&[]).unwrap();
@@ -178,6 +179,7 @@ fn memory_benchmark_large_scan(c: &mut Criterion) {
         threads_strategy: ThreadPoolStrategy::Default,
         no_cache: false,
         cache_ttl: 604800, // 7 days
+        profile: false,
     };
 
     let exclude_matcher = build_exclude_matcher(&[]).unwrap();
@@ -232,6 +234,7 @@ fn memory_benchmark_cache_operations(c: &mut Criterion) {
         threads_strategy: ThreadPoolStrategy::Default,
         no_cache: false,
         cache_ttl: 604800, // 7 days
+        profile: false,
     };
 
     let exclude_matcher = build_exclude_matcher(&[]).unwrap();
@@ -301,6 +304,7 @@ fn memory_benchmark_threaded_scan(c: &mut Criterion) {
         threads_strategy: ThreadPoolStrategy::WorkStealingUneven,
         no_cache: false,
         cache_ttl: 604800, // 7 days
+        profile: false,
     };
 
     let exclude_matcher = build_exclude_matcher(&[]).unwrap();

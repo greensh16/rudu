@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use tempfile::TempDir;
+use walkdir::WalkDir;
 
 fn create_test_directory_structure(dir: &Path, depth: usize, files_per_dir: usize) {
     if depth == 0 {
@@ -66,7 +67,7 @@ fn create_cache_for_structure(
 
     // Convert entries to cache format
     let mut cache = HashMap::new();
-    for entry in entries {
+    for entry in entries.entries {
         let metadata = fs::metadata(&entry.path).unwrap();
         let owner_u32 = entry.owner.as_ref().and_then(|s| s.parse::<u32>().ok());
         let cache_entry = rudu::cache::CacheEntry::new(
@@ -94,7 +95,7 @@ fn create_cache_for_structure(
 
 /// Modify a percentage of files in a directory structure to simulate cache misses
 fn modify_files_in_structure(dir: &Path, percentage: f32) {
-    let walker = walkdir::WalkDir::new(dir);
+    let walker = WalkDir::new(dir);
     let mut files: Vec<_> = walker
         .into_iter()
         .filter_map(|e| e.ok())
@@ -136,6 +137,7 @@ fn benchmark_scan_small_directory(c: &mut Criterion) {
         threads_strategy: ThreadPoolStrategy::Default,
         no_cache: false,
         cache_ttl: 604800, // 7 days
+        profile: None,
     };
 
     let exclude_matcher = build_exclude_matcher(&[]).unwrap();
@@ -173,6 +175,7 @@ fn benchmark_scan_deep_directory(c: &mut Criterion) {
         threads_strategy: ThreadPoolStrategy::Default,
         no_cache: false,
         cache_ttl: 604800, // 7 days
+        profile: None,
     };
 
     let exclude_matcher = build_exclude_matcher(&[]).unwrap();
@@ -210,6 +213,7 @@ fn benchmark_scan_with_owner_info(c: &mut Criterion) {
         threads_strategy: ThreadPoolStrategy::Default,
         no_cache: false,
         cache_ttl: 604800, // 7 days
+        profile: None,
     };
 
     let exclude_matcher = build_exclude_matcher(&[]).unwrap();
@@ -248,6 +252,7 @@ fn benchmark_scan_with_cache_hit(c: &mut Criterion) {
         threads_strategy: ThreadPoolStrategy::Default,
         no_cache: false,
         cache_ttl: 604800, // 7 days
+        profile: None,
     };
 
     // Create and populate cache
@@ -289,6 +294,7 @@ fn benchmark_scan_with_cache_miss(c: &mut Criterion) {
         threads_strategy: ThreadPoolStrategy::Default,
         no_cache: false,
         cache_ttl: 604800, // 7 days
+        profile: None,
     };
 
     // Create and populate cache
@@ -337,6 +343,7 @@ fn benchmark_scan_incremental_deep(c: &mut Criterion) {
         threads_strategy: ThreadPoolStrategy::Default,
         no_cache: false,
         cache_ttl: 604800, // 7 days
+        profile: None,
     };
 
     // Create and populate cache
