@@ -238,8 +238,8 @@ impl Cache {
     /// Get the cache file path for a given root directory
     ///
     /// First tries to use `<root>/.rudu-cache.bin`. If the root directory
-    /// is not writable, falls back to `$XDG_CACHE_HOME/rudu/<hash>.bin`
-    /// where `<hash>` is a hash of the root path.
+    /// is not writable, falls back to `RUDU_CACHE_DIR` (if set) or XDG cache directory
+    /// as `<cache_dir>/rudu/<hash>.bin` where `<hash>` is a hash of the root path.
     pub fn get_cache_path(root: &Path) -> Result<PathBuf> {
         // Try primary location: <root>/.rudu-cache.bin
         let primary_path = root.join(".rudu-cache.bin");
@@ -249,8 +249,8 @@ impl Cache {
             return Ok(primary_path);
         }
 
-        // Fallback to XDG cache directory
-        let cache_dir = get_xdg_cache_dir()?;
+        // Fallback to configurable cache directory
+        let cache_dir = super::cache_root();
         let rudu_cache_dir = cache_dir.join("rudu");
 
         // Create the rudu cache directory if it doesn't exist
@@ -270,11 +270,11 @@ impl Cache {
 
     /// Get the cache file path for a given root directory without performing write test
     ///
-    /// This function always uses the XDG cache directory to avoid changing the
+    /// This function always uses the configurable cache directory to avoid changing the
     /// directory's mtime during cache operations.
     pub fn get_cache_path_without_write_test(root: &Path) -> Result<PathBuf> {
-        // Always use XDG cache directory to avoid mtime issues
-        let cache_dir = get_xdg_cache_dir()?;
+        // Always use configurable cache directory to avoid mtime issues
+        let cache_dir = super::cache_root();
         let rudu_cache_dir = cache_dir.join("rudu");
 
         // Create the rudu cache directory if it doesn't exist
@@ -308,14 +308,17 @@ fn is_writable(path: &Path) -> bool {
 }
 
 /// Get the XDG cache directory, falling back to a default if not set
-fn get_xdg_cache_dir() -> Result<PathBuf> {
+pub fn get_xdg_cache_dir() -> Result<PathBuf> {
     if let Ok(xdg_cache) = std::env::var("XDG_CACHE_HOME") {
+        eprintln!("[CACHE DEBUG] get_xdg_cache_dir: Using XDG_CACHE_HOME={:?}, thread: {:?}", xdg_cache, std::thread::current().id());
         Ok(PathBuf::from(xdg_cache))
     } else {
         // Fallback to ~/.cache on Unix systems
         let home = std::env::var("HOME")
             .context("Neither XDG_CACHE_HOME nor HOME environment variables are set")?;
-        Ok(PathBuf::from(home).join(".cache"))
+        let cache_dir = PathBuf::from(home).join(".cache");
+        eprintln!("[CACHE DEBUG] get_xdg_cache_dir: Using default cache dir {:?}, thread: {:?}", cache_dir, std::thread::current().id());
+        Ok(cache_dir)
     }
 }
 

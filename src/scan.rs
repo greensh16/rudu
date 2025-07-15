@@ -534,10 +534,13 @@ pub fn scan_files_and_dirs_incremental(
         println!("Cache disabled, performing full scan");
         std::collections::HashMap::new()
     } else {
-        load_cache(root, args.cache_ttl).unwrap_or_else(|| {
-            println!("📦 No cache found, performing full scan");
-            std::collections::HashMap::new()
-        })
+        {
+            let cache = load_cache(root, args.cache_ttl);
+            if cache.is_empty() {
+                println!("📦 No cache found, performing full scan");
+            }
+            cache
+        }
     };
     phase_timings.push(cache_timer.finish());
 

@@ -77,7 +77,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Demonstrate memory-mapped cache loading
     println!("\nLoading cache using memory-mapped IO...");
     let start = std::time::Instant::now();
-    let loaded_cache = load_cache(&root_path, 604800).ok_or("Failed to load cache")?;
+    let loaded_cache = load_cache(&root_path, 604800);
+    if loaded_cache.is_empty() {
+        return Err("Failed to load cache".into());
+    }
     let load_duration = start.elapsed();
     println!("Cache loaded in {:?}", load_duration);
     println!("Loaded cache has {} entries", loaded_cache.len());
@@ -134,7 +137,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Load large cache
     let start = std::time::Instant::now();
-    let loaded_large_cache = load_cache(&root_path, 604800).ok_or("Failed to load large cache")?;
+    let loaded_large_cache = load_cache(&root_path, 604800);
+    if loaded_large_cache.is_empty() {
+        return Err("Failed to load large cache".into());
+    }
     let load_duration = start.elapsed();
     println!(
         "Large cache loaded in {:?} (O(1) memory-mapped access)",

@@ -14,54 +14,90 @@ mod tests;
 
 use anyhow::{anyhow, Context, Result};
 use memmap2::{Mmap, MmapMut};
+use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
+// Thread-safe file lock for atomic cache operations
+static FILE_LOCK: Lazy<parking_lot::Mutex<()>> = Lazy::new(|| parking_lot::Mutex::new(()));
+
 pub use model::{CacheEntry, CacheHeader};
+
+/// Get the cache root directory
+///
+/// This function provides a centralized way to determine the cache root directory:
+/// 1. If `RUDU_CACHE_DIR` environment variable is set, use that
+/// 2. Otherwise, fall back to XDG cache directory logic
+///
+/// # Returns
+/// * `PathBuf` - The cache root directory path
+pub fn cache_root() -> PathBuf {
+    if let Ok(cache_dir) = std::env::var("RUDU_CACHE_DIR") {
+        PathBuf::from(cache_dir)
+    } else {
+        // Fall back to XDG cache directory logic
+        model::get_xdg_cache_dir().unwrap_or_else(|_| {
+            // Final fallback if even HOME is not set
+            std::env::temp_dir().join("rudu-cache")
+        })
+    }
+}
 
 /// Load cache from disk using memory-mapped IO for O(1) access time
 ///
 /// This function uses memory-mapped files to efficiently load large caches
-/// without reading the entire file into memory at once. Returns None if the
-/// cache file doesn't exist or is invalid.
+/// without reading the entire file into memory at once. Returns an empty cache
+/// if the cache file doesn't exist or is invalid.
 ///
 /// # Arguments
 /// * `root` - The root path to determine the cache file location
 /// * `ttl_seconds` - Time to live in seconds for cache invalidation
 ///
 /// # Returns
-/// * `Option<HashMap<PathBuf, CacheEntry>>` - The loaded cache entries, or None if not found
-pub fn load_cache(root: &Path, ttl_seconds: u64) -> Option<HashMap<PathBuf, CacheEntry>> {
+/// * `HashMap<PathBuf, CacheEntry>` - The loaded cache entries, or empty cache if not found
+pub fn load_cache(root: &Path, ttl_seconds: u64) -> HashMap<PathBuf, CacheEntry> {
     let cache_path = match model::Cache::get_cache_path_without_write_test(root) {
         Ok(path) => path,
-        Err(_) => return None,
+        Err(_) => {
+            eprintln!("[CACHE DEBUG] load_cache: Failed to get cache path for root {:?}, thread: {:?}", root, std::thread::current().id());
+            return HashMap::new();
+        }
     };
+
+    eprintln!("[CACHE DEBUG] load_cache: Attempting to load cache from {:?} for root {:?}, thread: {:?}", cache_path, root, std::thread::current().id());
 
     // Check if cache file exists
     if !cache_path.exists() {
-        return None;
+        eprintln!("[CACHE DEBUG] load_cache: Cache file does not exist at {:?}, thread: {:?}", cache_path, std::thread::current().id());
+        return HashMap::new();
     }
 
-    match load_cache_from_file(&cache_path) {
+match load_cache_from_file(&cache_path) {
         Ok(cache) => {
+            eprintln!("[CACHE DEBUG] load_cache: Successfully loaded cache from {:?}, thread: {:?}", cache_path, std::thread::current().id());
             // Check if cache should be invalidated
             if cache.header.should_invalidate(root, ttl_seconds) {
+                eprintln!("[CACHE DEBUG] load_cache: Cache invalidated, removing file {:?}, thread: {:?}", cache_path, std::thread::current().id());
                 println!(
                     "🗑️  Cache invalidated (version mismatch, TTL expired, or root mtime changed)"
                 );
                 // Optionally remove the invalidated cache file
                 let _ = std::fs::remove_file(&cache_path);
-                return None;
+                return HashMap::new();
             }
             // Convert from hash-based entries back to path-based entries
             let path_entries: HashMap<PathBuf, CacheEntry> = cache
                 .entries.into_values().map(|entry| (entry.path.clone(), entry))
                 .collect();
-            Some(path_entries)
+            eprintln!("[CACHE DEBUG] load_cache: Returning {} entries from cache, thread: {:?}", path_entries.len(), std::thread::current().id());
+            path_entries
         }
-        Err(_) => None, // If loading fails, return None (cache will be regenerated)
+        Err(e) => {
+            eprintln!("[CACHE DEBUG] load_cache: Failed to load cache from {:?}, error: {}, thread: {:?}", cache_path, e, std::thread::current().id());
+            HashMap::new() // If loading fails, return an empty cache (cache will be regenerated)
+        }
     }
 }
 
@@ -78,8 +114,32 @@ pub fn load_cache(root: &Path, ttl_seconds: u64) -> Option<HashMap<PathBuf, Cach
 /// * `Result<()>` - Success or error information
 pub fn save_cache(root: &Path, cache: &HashMap<PathBuf, CacheEntry>) -> Result<()> {
     // Capture root mtime before any directory modifications
+    eprintln!("[CACHE DEBUG] save_cache: Saving cache for root {:?}, thread: {:?}", root, std::thread::current().id());
     let root_mtime = model::get_root_mtime(root);
     save_cache_with_mtime(root, cache, root_mtime)
+}
+
+/// Invalidate (remove) cache files for a given root directory
+///
+/// This function removes the cache file from disk, effectively invalidating
+/// the cache for the specified root directory.
+///
+/// # Arguments
+/// * `root` - The root path for which to invalidate the cache
+///
+/// # Returns
+/// * `Result<bool>` - True if a cache file was removed, false if none existed
+pub fn invalidate_cache(root: &Path) -> Result<bool> {
+    let cache_path = model::Cache::get_cache_path_without_write_test(root)
+        .context("Failed to determine cache file path")?;
+    
+    if cache_path.exists() {
+        std::fs::remove_file(&cache_path)
+            .with_context(|| format!("Failed to remove cache file: {}", cache_path.display()))?;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
 }
 
 /// Save cache to disk using efficient serialization with a specific root mtime
@@ -128,6 +188,10 @@ pub fn save_cache_with_mtime(
 
 /// Load cache from a specific file using memory-mapped IO
 fn load_cache_from_file(path: &Path) -> Result<model::Cache> {
+    // Lock file access to prevent concurrent reads/writes
+    let _g = FILE_LOCK.lock();
+    
+    eprintln!("[CACHE DEBUG] load_cache_from_file: Opening file {:?}, thread: {:?}", path, std::thread::current().id());
     let file = File::open(path)
         .with_context(|| format!("Failed to open cache file: {}", path.display()))?;
 
@@ -135,6 +199,8 @@ fn load_cache_from_file(path: &Path) -> Result<model::Cache> {
         .metadata()
         .with_context(|| format!("Failed to get file metadata: {}", path.display()))?
         .len();
+
+    eprintln!("[CACHE DEBUG] load_cache_from_file: File length: {}, thread: {:?}", file_len, std::thread::current().id());
 
     if file_len == 0 {
         return Err(anyhow!("Cache file is empty"));
@@ -171,17 +237,27 @@ fn load_cache_from_file(path: &Path) -> Result<model::Cache> {
     }
 }
 
-/// Save cache to a specific file using efficient serialization
+/// Save cache to a specific file using efficient serialization with atomic writes
 fn save_cache_to_file(path: &Path, cache: &model::Cache) -> Result<()> {
+    // Lock file access to prevent concurrent reads/writes
+    let _g = FILE_LOCK.lock();
+    
     // First serialize to get the size
     let serialized_data = bincode::serialize(cache).context("Failed to serialize cache data")?;
 
+    // Create temporary file path
+    let temp_path = path.with_extension("tmp");
+    
     // Try memory-mapped IO first, fall back to regular file IO if it fails
-    if try_save_with_mmap(path, &serialized_data).is_err() {
+    if try_save_with_mmap(&temp_path, &serialized_data).is_err() {
         // Fallback to regular file IO
-        save_with_regular_io(path, &serialized_data)
-            .with_context(|| format!("Failed to save cache to: {}", path.display()))?;
+        save_with_regular_io(&temp_path, &serialized_data)
+            .with_context(|| format!("Failed to save cache to temporary file: {}", temp_path.display()))?;
     }
+
+    // Atomically move the temporary file to the final location
+    std::fs::rename(&temp_path, path)
+        .with_context(|| format!("Failed to atomically move cache file from {} to {}", temp_path.display(), path.display()))?;
 
     Ok(())
 }
@@ -253,4 +329,83 @@ fn save_with_regular_io(path: &Path, data: &[u8]) -> Result<()> {
         .with_context(|| format!("Failed to flush cache data: {}", path.display()))?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod cache_root_tests {
+    use super::*;
+    use std::env;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_cache_root_with_rudu_cache_dir() {
+        let temp_dir = TempDir::new().unwrap();
+        let custom_cache_path = temp_dir.path().to_string_lossy().to_string();
+        
+        // Set RUDU_CACHE_DIR environment variable
+        env::set_var("RUDU_CACHE_DIR", &custom_cache_path);
+        
+        // Test that cache_root() uses the custom directory
+        let cache_root_result = cache_root();
+        assert_eq!(cache_root_result, PathBuf::from(&custom_cache_path));
+        
+        // Clean up
+        env::remove_var("RUDU_CACHE_DIR");
+    }
+    
+    #[test]
+    fn test_cache_root_fallback_to_xdg() {
+        // Ensure RUDU_CACHE_DIR is not set
+        env::remove_var("RUDU_CACHE_DIR");
+        
+        // Test that cache_root() falls back to XDG logic
+        let cache_root_result = cache_root();
+        
+        // Should not be empty and should contain some sensible path
+        assert!(!cache_root_result.to_string_lossy().is_empty());
+        
+        // Should be different from a custom path
+        assert_ne!(cache_root_result, PathBuf::from("/tmp/custom-rudu-cache"));
+    }
+    
+    #[test]
+    fn test_cache_operations_use_configurable_directory() {
+        let temp_dir = TempDir::new().unwrap();
+        let custom_cache_path = temp_dir.path().to_string_lossy().to_string();
+        
+        // Set RUDU_CACHE_DIR environment variable
+        env::set_var("RUDU_CACHE_DIR", &custom_cache_path);
+        
+        // Create test cache
+        let root_path = PathBuf::from(".");
+        let mut cache = HashMap::new();
+        let entry = CacheEntry::new(
+            12345,
+            PathBuf::from("test.txt"),
+            1024,
+            1234567890,
+            1,
+            Some(1),
+            Some(1000),
+            crate::data::EntryType::File,
+        );
+        cache.insert(PathBuf::from("test.txt"), entry);
+        
+        // Save cache (should use custom directory)
+        let save_result = save_cache(&root_path, &cache);
+        assert!(save_result.is_ok());
+        
+        // Load cache (should load from custom directory)
+        let loaded_cache = load_cache(&root_path, 604800);
+        assert_eq!(loaded_cache.len(), 1);
+        assert!(loaded_cache.contains_key(&PathBuf::from("test.txt")));
+        
+        // Test invalidation
+        let was_invalidated = invalidate_cache(&root_path);
+        assert!(was_invalidated.is_ok());
+        assert!(was_invalidated.unwrap());
+        
+        // Clean up
+        env::remove_var("RUDU_CACHE_DIR");
+    }
 }
