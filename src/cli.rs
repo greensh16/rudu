@@ -25,20 +25,6 @@ use std::path::PathBuf;
 ///
 /// This struct defines all available command-line options and flags
 /// for controlling the behavior of the file system scan and output formatting.
-///
-/// # Examples
-///
-/// ```rust
-/// use rudu::Args;
-/// use clap::Parser;
-///
-/// // Parse arguments from command line
-/// let args = Args::parse();
-///
-/// // Check if CSV output is requested
-/// if args.output.is_some() {
-///     println!("CSV output enabled");
-/// }
 /// ```
 #[derive(Parser, Debug)]
 #[command(name = "rudu", author = "Sam Green", version = "1.3.0", about)]
