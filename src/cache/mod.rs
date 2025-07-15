@@ -61,25 +61,20 @@ pub fn load_cache(root: &Path, ttl_seconds: u64) -> HashMap<PathBuf, CacheEntry>
     let cache_path = match model::Cache::get_cache_path_without_write_test(root) {
         Ok(path) => path,
         Err(_) => {
-            eprintln!("[CACHE DEBUG] load_cache: Failed to get cache path for root {:?}, thread: {:?}", root, std::thread::current().id());
             return HashMap::new();
         }
     };
 
-    eprintln!("[CACHE DEBUG] load_cache: Attempting to load cache from {:?} for root {:?}, thread: {:?}", cache_path, root, std::thread::current().id());
 
     // Check if cache file exists
     if !cache_path.exists() {
-        eprintln!("[CACHE DEBUG] load_cache: Cache file does not exist at {:?}, thread: {:?}", cache_path, std::thread::current().id());
         return HashMap::new();
     }
 
 match load_cache_from_file(&cache_path) {
         Ok(cache) => {
-            eprintln!("[CACHE DEBUG] load_cache: Successfully loaded cache from {:?}, thread: {:?}", cache_path, std::thread::current().id());
             // Check if cache should be invalidated
             if cache.header.should_invalidate(root, ttl_seconds) {
-                eprintln!("[CACHE DEBUG] load_cache: Cache invalidated, removing file {:?}, thread: {:?}", cache_path, std::thread::current().id());
                 println!(
                     "🗑️  Cache invalidated (version mismatch, TTL expired, or root mtime changed)"
                 );
@@ -91,11 +86,9 @@ match load_cache_from_file(&cache_path) {
             let path_entries: HashMap<PathBuf, CacheEntry> = cache
                 .entries.into_values().map(|entry| (entry.path.clone(), entry))
                 .collect();
-            eprintln!("[CACHE DEBUG] load_cache: Returning {} entries from cache, thread: {:?}", path_entries.len(), std::thread::current().id());
             path_entries
         }
         Err(e) => {
-            eprintln!("[CACHE DEBUG] load_cache: Failed to load cache from {:?}, error: {}, thread: {:?}", cache_path, e, std::thread::current().id());
             HashMap::new() // If loading fails, return an empty cache (cache will be regenerated)
         }
     }
@@ -114,7 +107,6 @@ match load_cache_from_file(&cache_path) {
 /// * `Result<()>` - Success or error information
 pub fn save_cache(root: &Path, cache: &HashMap<PathBuf, CacheEntry>) -> Result<()> {
     // Capture root mtime before any directory modifications
-    eprintln!("[CACHE DEBUG] save_cache: Saving cache for root {:?}, thread: {:?}", root, std::thread::current().id());
     let root_mtime = model::get_root_mtime(root);
     save_cache_with_mtime(root, cache, root_mtime)
 }
@@ -191,7 +183,6 @@ fn load_cache_from_file(path: &Path) -> Result<model::Cache> {
     // Lock file access to prevent concurrent reads/writes
     let _g = FILE_LOCK.lock();
     
-    eprintln!("[CACHE DEBUG] load_cache_from_file: Opening file {:?}, thread: {:?}", path, std::thread::current().id());
     let file = File::open(path)
         .with_context(|| format!("Failed to open cache file: {}", path.display()))?;
 
@@ -200,7 +191,6 @@ fn load_cache_from_file(path: &Path) -> Result<model::Cache> {
         .with_context(|| format!("Failed to get file metadata: {}", path.display()))?
         .len();
 
-    eprintln!("[CACHE DEBUG] load_cache_from_file: File length: {}, thread: {:?}", file_len, std::thread::current().id());
 
     if file_len == 0 {
         return Err(anyhow!("Cache file is empty"));

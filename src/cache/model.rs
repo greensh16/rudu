@@ -310,14 +310,12 @@ fn is_writable(path: &Path) -> bool {
 /// Get the XDG cache directory, falling back to a default if not set
 pub fn get_xdg_cache_dir() -> Result<PathBuf> {
     if let Ok(xdg_cache) = std::env::var("XDG_CACHE_HOME") {
-        eprintln!("[CACHE DEBUG] get_xdg_cache_dir: Using XDG_CACHE_HOME={:?}, thread: {:?}", xdg_cache, std::thread::current().id());
         Ok(PathBuf::from(xdg_cache))
     } else {
         // Fallback to ~/.cache on Unix systems
         let home = std::env::var("HOME")
             .context("Neither XDG_CACHE_HOME nor HOME environment variables are set")?;
         let cache_dir = PathBuf::from(home).join(".cache");
-        eprintln!("[CACHE DEBUG] get_xdg_cache_dir: Using default cache dir {:?}, thread: {:?}", cache_dir, std::thread::current().id());
         Ok(cache_dir)
     }
 }
