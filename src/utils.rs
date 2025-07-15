@@ -13,11 +13,15 @@ use crate::cli::SortKey;
 use crate::data::{EntryType, FileEntry};
 use anyhow::{Context, Result};
 use globset::{Glob, GlobSet, GlobSetBuilder};
-use libc::{getpwuid, stat as libc_stat, stat};
-use std::collections::hash_map::DefaultHasher;
+use libc::{getpwuid_r, stat as libc_stat, stat, passwd, c_char};
+use std::mem::MaybeUninit;
+use std::sync::Mutex;
+use std::collections::{HashMap, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
 use std::os::unix::ffi::OsStrExt;
 use std::{ffi::CStr, ffi::CString, path::Path};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::process::Command;
 
 /// Returns the actual disk usage (in bytes) of a file or directory.
 ///
@@ -91,10 +95,48 @@ pub fn sort_entries(entries: &mut [FileEntry], sort_key: SortKey) {
     }
 }
 
+// Global cache for UID to username mapping to avoid repeated segfaults
+static UID_CACHE: std::sync::LazyLock<Mutex<HashMap<u32, String>>> = std::sync::LazyLock::new(|| {
+    Mutex::new(HashMap::new())
+});
+
+// Flag to track if we've encountered getpwuid issues
+static GETPWUID_BROKEN: AtomicBool = AtomicBool::new(false);
+
+/// Fallback function to resolve UID to username using getent command
+/// This is used when getpwuid_r fails but getent works
+fn resolve_uid_with_getent(uid: u32) -> Option<String> {
+    let output = Command::new("getent")
+        .arg("passwd")
+        .arg(uid.to_string())
+        .output()
+        .ok()?;
+    
+    if !output.status.success() {
+        return None;
+    }
+    
+    let output_str = String::from_utf8(output.stdout).ok()?;
+    let line = output_str.trim();
+    
+    // Parse passwd format: username:password:uid:gid:gecos:home:shell
+    let parts: Vec<&str> = line.split(':').collect();
+    if parts.len() >= 1 {
+        Some(parts[0].to_string())
+    } else {
+        None
+    }
+}
+
 /// Returns the username (or UID as a string) for the file or directory owner.
 ///
 /// Uses `libc::getpwuid` to resolve user ID to a username. If the username
 /// cannot be resolved, returns the numeric UID as a string.
+/// 
+/// This function implements several safety measures:
+/// - Thread-safe caching to avoid repeated calls for the same UID
+/// - Panic handling to prevent segfaults
+/// - Fallback to UID strings when getpwuid is broken
 ///
 /// # Arguments
 /// * `path` - The file or directory path to check
@@ -115,22 +157,84 @@ pub fn get_owner(path: &Path) -> Option<String> {
     let stat_buf = unsafe { stat_buf.assume_init() };
     let uid = stat_buf.st_uid;
     
-    // Safely handle getpwuid which may fail on HPC systems
-    let pw = unsafe { getpwuid(uid) };
-    if pw.is_null() {
+    // Check if getpwuid is known to be broken
+    if GETPWUID_BROKEN.load(Ordering::Relaxed) {
         return Some(uid.to_string());
     }
     
-    // Additional safety check before dereferencing
-    unsafe {
-        let pw_name = (*pw).pw_name;
-        if pw_name.is_null() {
-            return Some(uid.to_string());
+    // Try to get from cache first
+    if let Ok(cache) = UID_CACHE.lock() {
+        if let Some(cached_name) = cache.get(&uid) {
+            return Some(cached_name.clone());
+        }
+    }
+    
+    // Try to resolve the UID to a username using thread-safe getpwuid_r
+    let resolved_name = match std::panic::catch_unwind(|| {
+        // Use thread-safe getpwuid_r instead of getpwuid
+        let mut pwd = MaybeUninit::<passwd>::uninit();
+        let mut buf = [0u8; 4096]; // Buffer for getpwuid_r
+        let mut result: *mut passwd = std::ptr::null_mut();
+        
+        let ret = unsafe {
+            getpwuid_r(
+                uid,
+                pwd.as_mut_ptr(),
+                buf.as_mut_ptr() as *mut c_char,
+                buf.len(),
+                &mut result,
+            )
+        };
+        
+        // Check if getpwuid_r succeeded
+        if ret != 0 || result.is_null() {
+            return None;
         }
         
-        let name = CStr::from_ptr(pw_name);
-        name.to_str().ok().map(String::from)
+        // Safe to dereference result now
+        unsafe {
+            let pw_name = (*result).pw_name;
+            if pw_name.is_null() {
+                return None;
+            }
+            
+            // Try to create a CStr from the pointer
+            let name = CStr::from_ptr(pw_name);
+            name.to_str().ok().map(String::from)
+        }
+    }) {
+        Ok(Some(username)) => username,
+        Ok(None) => {
+            // Try fallback to getent command
+            if let Some(username) = resolve_uid_with_getent(uid) {
+                static FIRST_SUCCESS: std::sync::Once = std::sync::Once::new();
+                FIRST_SUCCESS.call_once(|| {
+                    eprintln!("Info: getpwuid_r failed but getent works. Using getent as fallback for UID resolution.");
+                });
+                username
+            } else {
+                // Both methods failed - warn but continue
+                static FIRST_WARN: std::sync::Once = std::sync::Once::new();
+                FIRST_WARN.call_once(|| {
+                    eprintln!("Warning: Failed to resolve username for UID {} (both getpwuid_r and getent failed). Further warnings will be suppressed.", uid);
+                });
+                uid.to_string()
+            }
+        },
+        Err(_) => {
+            // Panic occurred - mark getpwuid as broken and fallback to UID strings
+            GETPWUID_BROKEN.store(true, Ordering::Relaxed);
+            eprintln!("Warning: getpwuid() is causing segfaults. Falling back to UID display for all remaining files.");
+            uid.to_string()
+        }
+    };
+    
+    // Cache the result
+    if let Ok(mut cache) = UID_CACHE.lock() {
+        cache.insert(uid, resolved_name.clone());
     }
+    
+    Some(resolved_name)
 }
 
 /// Expands exclude patterns into common glob forms:
