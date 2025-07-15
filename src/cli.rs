@@ -17,9 +17,9 @@
 //! # Dependencies
 //! - [`clap`] for argument parsing and help generation
 
+use crate::thread_pool::ThreadPoolStrategy;
 use clap::{Parser, ValueEnum};
 use std::path::PathBuf;
-use crate::thread_pool::ThreadPoolStrategy;
 
 /// Command-line arguments for the `rudu` disk usage calculator.
 ///

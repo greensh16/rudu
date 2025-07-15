@@ -1,8 +1,8 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use rudu::cli::SortKey;
 use rudu::scan::{scan_files_and_dirs, scan_files_and_dirs_incremental};
-use rudu::utils::build_exclude_matcher;
 use rudu::thread_pool::ThreadPoolStrategy;
+use rudu::utils::build_exclude_matcher;
 use rudu::Args;
 use std::fs;
 use std::path::Path;
@@ -14,10 +14,10 @@ use procfs::process::Process;
 /// Memory usage tracker for benchmarks
 #[derive(Debug, Clone)]
 struct MemoryUsage {
-    peak_rss: u64,      // Peak resident set size in bytes
-    peak_vms: u64,      // Peak virtual memory size in bytes
-    start_rss: u64,     // RSS at start
-    start_vms: u64,     // VMS at start
+    peak_rss: u64,  // Peak resident set size in bytes
+    peak_vms: u64,  // Peak virtual memory size in bytes
+    start_rss: u64, // RSS at start
+    start_vms: u64, // VMS at start
 }
 
 impl MemoryUsage {
@@ -30,7 +30,7 @@ impl MemoryUsage {
             start_vms,
         }
     }
-    
+
     fn update(&mut self) {
         let (current_rss, current_vms) = get_memory_usage();
         if current_rss > self.peak_rss {
@@ -40,7 +40,7 @@ impl MemoryUsage {
             self.peak_vms = current_vms;
         }
     }
-    
+
     fn peak_memory_mb(&self) -> f64 {
         (self.peak_rss - self.start_rss) as f64 / 1024.0 / 1024.0
     }
@@ -135,20 +135,24 @@ fn memory_benchmark_small_scan(c: &mut Criterion) {
 
             for _i in 0..iters {
                 let start = std::time::Instant::now();
-                
+
                 let _result = scan_files_and_dirs(
                     black_box(root),
                     black_box(&args),
                     black_box(&exclude_matcher),
                     black_box(SortKey::Size),
-                ).unwrap();
-                
+                )
+                .unwrap();
+
                 memory_tracker.update();
                 total_duration += start.elapsed();
             }
 
             // Report memory usage
-            println!("Small scan peak memory usage: {:.2} MB", memory_tracker.peak_memory_mb());
+            println!(
+                "Small scan peak memory usage: {:.2} MB",
+                memory_tracker.peak_memory_mb()
+            );
             total_duration
         })
     });
@@ -185,20 +189,24 @@ fn memory_benchmark_large_scan(c: &mut Criterion) {
 
             for _i in 0..iters {
                 let start = std::time::Instant::now();
-                
+
                 let _result = scan_files_and_dirs(
                     black_box(root),
                     black_box(&args),
                     black_box(&exclude_matcher),
                     black_box(SortKey::Size),
-                ).unwrap();
-                
+                )
+                .unwrap();
+
                 memory_tracker.update();
                 total_duration += start.elapsed();
             }
 
             // Report memory usage
-            println!("Large scan peak memory usage: {:.2} MB", memory_tracker.peak_memory_mb());
+            println!(
+                "Large scan peak memory usage: {:.2} MB",
+                memory_tracker.peak_memory_mb()
+            );
             total_duration
         })
     });
@@ -235,34 +243,39 @@ fn memory_benchmark_cache_operations(c: &mut Criterion) {
 
             for _i in 0..iters {
                 let start = std::time::Instant::now();
-                
+
                 // First scan to create cache
                 let _result = scan_files_and_dirs(
                     black_box(root),
                     black_box(&args),
                     black_box(&exclude_matcher),
                     black_box(SortKey::Size),
-                ).unwrap();
-                
+                )
+                .unwrap();
+
                 memory_tracker.update();
-                
+
                 // Second scan using cache
                 let _result = scan_files_and_dirs_incremental(
                     black_box(root),
                     black_box(&args),
                     black_box(&exclude_matcher),
                     black_box(SortKey::Size),
-                ).unwrap();
-                
+                )
+                .unwrap();
+
                 memory_tracker.update();
                 total_duration += start.elapsed();
-                
+
                 // Clean up cache for next iteration
                 let _ = std::fs::remove_file(root.join(".rudu-cache.bin"));
             }
 
             // Report memory usage
-            println!("Cache operations peak memory usage: {:.2} MB", memory_tracker.peak_memory_mb());
+            println!(
+                "Cache operations peak memory usage: {:.2} MB",
+                memory_tracker.peak_memory_mb()
+            );
             total_duration
         })
     });
@@ -299,20 +312,24 @@ fn memory_benchmark_threaded_scan(c: &mut Criterion) {
 
             for _i in 0..iters {
                 let start = std::time::Instant::now();
-                
+
                 let _result = scan_files_and_dirs(
                     black_box(root),
                     black_box(&args),
                     black_box(&exclude_matcher),
                     black_box(SortKey::Size),
-                ).unwrap();
-                
+                )
+                .unwrap();
+
                 memory_tracker.update();
                 total_duration += start.elapsed();
             }
 
             // Report memory usage
-            println!("Threaded scan peak memory usage: {:.2} MB", memory_tracker.peak_memory_mb());
+            println!(
+                "Threaded scan peak memory usage: {:.2} MB",
+                memory_tracker.peak_memory_mb()
+            );
             total_duration
         })
     });

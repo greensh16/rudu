@@ -1,13 +1,13 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use rudu::cache::save_cache;
 use rudu::cli::SortKey;
 use rudu::scan::{scan_files_and_dirs, scan_files_and_dirs_incremental};
-use rudu::utils::build_exclude_matcher;
 use rudu::thread_pool::ThreadPoolStrategy;
-use rudu::cache::save_cache;
+use rudu::utils::build_exclude_matcher;
 use rudu::Args;
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
-use std::collections::HashMap;
 use tempfile::TempDir;
 
 fn create_test_directory_structure(dir: &Path, depth: usize, files_per_dir: usize) {
@@ -39,7 +39,11 @@ fn create_deep_tree_structure(dir: &Path, depth: usize, files_per_dir: usize) {
     let leaf_multiplier = if depth <= 2 { 3 } else { 1 };
     for i in 0..(files_per_dir * leaf_multiplier) {
         let file_path = dir.join(format!("deep_file_{}.txt", i));
-        fs::write(&file_path, format!("Deep content of file {} at depth {}", i, depth)).unwrap();
+        fs::write(
+            &file_path,
+            format!("Deep content of file {} at depth {}", i, depth),
+        )
+        .unwrap();
     }
 
     // Create more subdirectories at deeper levels
@@ -52,11 +56,14 @@ fn create_deep_tree_structure(dir: &Path, depth: usize, files_per_dir: usize) {
 }
 
 /// Create a cache for the given directory structure
-fn create_cache_for_structure(root: &Path, args: &Args) -> HashMap<std::path::PathBuf, rudu::cache::CacheEntry> {
+fn create_cache_for_structure(
+    root: &Path,
+    args: &Args,
+) -> HashMap<std::path::PathBuf, rudu::cache::CacheEntry> {
     // First scan to populate cache
     let exclude_matcher = build_exclude_matcher(&[]).unwrap();
     let entries = scan_files_and_dirs(root, args, &exclude_matcher, SortKey::Size).unwrap();
-    
+
     // Convert entries to cache format
     let mut cache = HashMap::new();
     for entry in entries {
@@ -66,7 +73,12 @@ fn create_cache_for_structure(root: &Path, args: &Args) -> HashMap<std::path::Pa
             rudu::utils::path_hash(&entry.path),
             entry.path.clone(),
             entry.size,
-            metadata.modified().unwrap().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(),
+            metadata
+                .modified()
+                .unwrap()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
             1, // nlink - simplified for benchmark
             entry.inodes,
             owner_u32,
@@ -74,7 +86,7 @@ fn create_cache_for_structure(root: &Path, args: &Args) -> HashMap<std::path::Pa
         );
         cache.insert(entry.path, cache_entry);
     }
-    
+
     // Save cache to disk
     save_cache(root, &cache).unwrap();
     cache
@@ -83,16 +95,23 @@ fn create_cache_for_structure(root: &Path, args: &Args) -> HashMap<std::path::Pa
 /// Modify a percentage of files in a directory structure to simulate cache misses
 fn modify_files_in_structure(dir: &Path, percentage: f32) {
     let walker = walkdir::WalkDir::new(dir);
-    let mut files: Vec<_> = walker.into_iter()
+    let mut files: Vec<_> = walker
+        .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file())
         .collect();
-    
+
     let modify_count = (files.len() as f32 * percentage / 100.0).ceil() as usize;
     files.truncate(modify_count);
-    
+
     for file in files {
-        let content = format!("Modified content - {}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
+        let content = format!(
+            "Modified content - {}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis()
+        );
         fs::write(file.path(), content).unwrap();
     }
 }

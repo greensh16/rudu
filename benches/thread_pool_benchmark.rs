@@ -1,8 +1,8 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use rudu::cli::SortKey;
 use rudu::scan::scan_files_and_dirs;
-use rudu::utils::build_exclude_matcher;
 use rudu::thread_pool::ThreadPoolStrategy;
+use rudu::utils::build_exclude_matcher;
 use rudu::Args;
 use std::fs;
 use std::path::Path;
@@ -56,22 +56,27 @@ struct BenchmarkParams {
 
 impl BenchmarkParams {
     fn id(&self) -> String {
-        format!("{}_{}_threads_{}", self.strategy.as_str(), self.n_threads, self.workload)
+        format!(
+            "{}_{}_threads_{}",
+            self.strategy.as_str(),
+            self.n_threads,
+            self.workload
+        )
     }
 }
 
 fn thread_pool_benchmark(c: &mut Criterion) {
     let num_cpus = num_cpus::get();
-    
+
     // Create test directories for different workloads
     let small_temp_dir = TempDir::new().unwrap();
     let small_root = small_temp_dir.path();
     create_test_directory_structure(small_root, 3, 5);
-    
+
     let io_heavy_temp_dir = TempDir::new().unwrap();
     let io_heavy_root = io_heavy_temp_dir.path();
     create_io_heavy_structure(io_heavy_root, 3, 8);
-    
+
     let deep_temp_dir = TempDir::new().unwrap();
     let deep_root = deep_temp_dir.path();
     create_test_directory_structure(deep_root, 6, 12);
@@ -92,7 +97,9 @@ fn thread_pool_benchmark(c: &mut Criterion) {
             if strategy == ThreadPoolStrategy::Default && n_threads != num_cpus {
                 continue;
             }
-            if strategy == ThreadPoolStrategy::NumCpusMinus1 && n_threads != std::cmp::max(1, num_cpus - 1) {
+            if strategy == ThreadPoolStrategy::NumCpusMinus1
+                && n_threads != std::cmp::max(1, num_cpus - 1)
+            {
                 continue;
             }
             if strategy == ThreadPoolStrategy::IOHeavy && n_threads != num_cpus * 2 {
@@ -103,55 +110,76 @@ fn thread_pool_benchmark(c: &mut Criterion) {
             }
 
             let params = vec![
-                BenchmarkParams { strategy, n_threads, workload: "small" },
-                BenchmarkParams { strategy, n_threads, workload: "io_heavy" },
-                BenchmarkParams { strategy, n_threads, workload: "deep" },
+                BenchmarkParams {
+                    strategy,
+                    n_threads,
+                    workload: "small",
+                },
+                BenchmarkParams {
+                    strategy,
+                    n_threads,
+                    workload: "io_heavy",
+                },
+                BenchmarkParams {
+                    strategy,
+                    n_threads,
+                    workload: "deep",
+                },
             ];
 
             for param in params {
                 let (test_root, test_args) = match param.workload {
-                    "small" => (small_root, Args {
-                        path: small_root.to_path_buf(),
-                        depth: None,
-                        sort: SortKey::Size,
-                        show_files: false,
-                        exclude: vec![],
-                        show_owner: false,
-                        output: None,
-                        threads: Some(param.n_threads),
-                        show_inodes: true,
-                        threads_strategy: param.strategy,
-                        no_cache: false,
-                        cache_ttl: 604800,
-                    }),
-                    "io_heavy" => (io_heavy_root, Args {
-                        path: io_heavy_root.to_path_buf(),
-                        depth: None,
-                        sort: SortKey::Size,
-                        show_files: false,
-                        exclude: vec![],
-                        show_owner: true, // Enable owner info for I/O heavy workload
-                        output: None,
-                        threads: Some(param.n_threads),
-                        show_inodes: true,
-                        threads_strategy: param.strategy,
-                        no_cache: false,
-                        cache_ttl: 604800,
-                    }),
-                    "deep" => (deep_root, Args {
-                        path: deep_root.to_path_buf(),
-                        depth: None,
-                        sort: SortKey::Size,
-                        show_files: true,
-                        exclude: vec![],
-                        show_owner: false,
-                        output: None,
-                        threads: Some(param.n_threads),
-                        show_inodes: true,
-                        threads_strategy: param.strategy,
-                        no_cache: false,
-                        cache_ttl: 604800,
-                    }),
+                    "small" => (
+                        small_root,
+                        Args {
+                            path: small_root.to_path_buf(),
+                            depth: None,
+                            sort: SortKey::Size,
+                            show_files: false,
+                            exclude: vec![],
+                            show_owner: false,
+                            output: None,
+                            threads: Some(param.n_threads),
+                            show_inodes: true,
+                            threads_strategy: param.strategy,
+                            no_cache: false,
+                            cache_ttl: 604800,
+                        },
+                    ),
+                    "io_heavy" => (
+                        io_heavy_root,
+                        Args {
+                            path: io_heavy_root.to_path_buf(),
+                            depth: None,
+                            sort: SortKey::Size,
+                            show_files: false,
+                            exclude: vec![],
+                            show_owner: true, // Enable owner info for I/O heavy workload
+                            output: None,
+                            threads: Some(param.n_threads),
+                            show_inodes: true,
+                            threads_strategy: param.strategy,
+                            no_cache: false,
+                            cache_ttl: 604800,
+                        },
+                    ),
+                    "deep" => (
+                        deep_root,
+                        Args {
+                            path: deep_root.to_path_buf(),
+                            depth: None,
+                            sort: SortKey::Size,
+                            show_files: true,
+                            exclude: vec![],
+                            show_owner: false,
+                            output: None,
+                            threads: Some(param.n_threads),
+                            show_inodes: true,
+                            threads_strategy: param.strategy,
+                            no_cache: false,
+                            cache_ttl: 604800,
+                        },
+                    ),
                     _ => unreachable!(),
                 };
 
@@ -185,7 +213,7 @@ fn thread_pool_benchmark(c: &mut Criterion) {
 // Simplified benchmark that focuses on comparing strategies with optimal thread counts
 fn strategy_comparison_benchmark(c: &mut Criterion) {
     let num_cpus = num_cpus::get();
-    
+
     // Create test directory
     let temp_dir = TempDir::new().unwrap();
     let root = temp_dir.path();
@@ -194,7 +222,10 @@ fn strategy_comparison_benchmark(c: &mut Criterion) {
     let strategies_with_threads = vec![
         (ThreadPoolStrategy::Default, num_cpus),
         (ThreadPoolStrategy::Fixed, num_cpus),
-        (ThreadPoolStrategy::NumCpusMinus1, std::cmp::max(1, num_cpus - 1)),
+        (
+            ThreadPoolStrategy::NumCpusMinus1,
+            std::cmp::max(1, num_cpus - 1),
+        ),
         (ThreadPoolStrategy::IOHeavy, num_cpus * 2),
         (ThreadPoolStrategy::WorkStealingUneven, num_cpus),
     ];

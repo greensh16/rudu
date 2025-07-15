@@ -62,7 +62,10 @@ pub fn configure_pool(strategy: ThreadPoolStrategy, n_threads: usize) -> Result<
         ThreadPoolStrategy::Default => {
             // Use Rayon's default configuration
             let default_threads = num_cpus::get();
-            println!("🔧 Using default thread pool strategy ({} threads)", default_threads);
+            println!(
+                "🔧 Using default thread pool strategy ({} threads)",
+                default_threads
+            );
             return Ok(default_threads);
         }
         ThreadPoolStrategy::Fixed => {
@@ -91,7 +94,11 @@ pub fn configure_pool(strategy: ThreadPoolStrategy, n_threads: usize) -> Result<
         .build_global()
         .context("Failed to configure thread pool")?;
 
-    println!("🔧 Using {} strategy with {} threads", strategy.as_str(), actual_threads);
+    println!(
+        "🔧 Using {} strategy with {} threads",
+        strategy.as_str(),
+        actual_threads
+    );
     Ok(actual_threads)
 }
 
@@ -105,20 +112,23 @@ mod tests {
         assert_eq!(ThreadPoolStrategy::Fixed.as_str(), "Fixed");
         assert_eq!(ThreadPoolStrategy::NumCpusMinus1.as_str(), "NumCpusMinus1");
         assert_eq!(ThreadPoolStrategy::IOHeavy.as_str(), "IOHeavy");
-        assert_eq!(ThreadPoolStrategy::WorkStealingUneven.as_str(), "WorkStealingUneven");
+        assert_eq!(
+            ThreadPoolStrategy::WorkStealingUneven.as_str(),
+            "WorkStealingUneven"
+        );
     }
 
     #[test]
     fn test_configure_pool_num_cpus_minus_1() {
         let cpus = num_cpus::get();
         let expected = std::cmp::max(1, cpus - 1);
-        
+
         // This would actually configure the global pool, so we just test the logic
         let actual = match ThreadPoolStrategy::NumCpusMinus1 {
             ThreadPoolStrategy::NumCpusMinus1 => std::cmp::max(1, cpus - 1),
             _ => unreachable!(),
         };
-        
+
         assert_eq!(actual, expected);
     }
 
@@ -126,13 +136,13 @@ mod tests {
     fn test_configure_pool_io_heavy() {
         let cpus = num_cpus::get();
         let expected = cpus * 2;
-        
+
         // This would actually configure the global pool, so we just test the logic
         let actual = match ThreadPoolStrategy::IOHeavy {
             ThreadPoolStrategy::IOHeavy => cpus * 2,
             _ => unreachable!(),
         };
-        
+
         assert_eq!(actual, expected);
     }
 }

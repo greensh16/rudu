@@ -80,7 +80,7 @@ impl CacheHeader {
             root_mtime,
         }
     }
-    
+
     /// Create a new cache header with a specific root mtime
     pub fn new_with_mtime(root_path: PathBuf, root_mtime: Option<u64>) -> Self {
         let creation_time = SystemTime::now()
@@ -144,6 +144,7 @@ impl CacheHeader {
 
 impl CacheEntry {
     /// Create a new cache entry from file metadata
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         path_hash: u64,
         path: PathBuf,
@@ -205,11 +206,15 @@ impl Cache {
     pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
         let file = File::open(path.as_ref())
             .with_context(|| format!("Failed to open cache file: {}", path.as_ref().display()))?;
-        
+
         let reader = BufReader::new(file);
-        let cache = bincode::deserialize_from(reader)
-            .with_context(|| format!("Failed to deserialize cache from: {}", path.as_ref().display()))?;
-        
+        let cache = bincode::deserialize_from(reader).with_context(|| {
+            format!(
+                "Failed to deserialize cache from: {}",
+                path.as_ref().display()
+            )
+        })?;
+
         Ok(cache)
     }
 
@@ -221,23 +226,24 @@ impl Cache {
             .truncate(true)
             .open(path.as_ref())
             .with_context(|| format!("Failed to create cache file: {}", path.as_ref().display()))?;
-        
+
         let writer = BufWriter::new(file);
-        bincode::serialize_into(writer, self)
-            .with_context(|| format!("Failed to serialize cache to: {}", path.as_ref().display()))?;
-        
+        bincode::serialize_into(writer, self).with_context(|| {
+            format!("Failed to serialize cache to: {}", path.as_ref().display())
+        })?;
+
         Ok(())
     }
 
     /// Get the cache file path for a given root directory
-    /// 
+    ///
     /// First tries to use `<root>/.rudu-cache.bin`. If the root directory
     /// is not writable, falls back to `$XDG_CACHE_HOME/rudu/<hash>.bin`
     /// where `<hash>` is a hash of the root path.
     pub fn get_cache_path(root: &Path) -> Result<PathBuf> {
         // Try primary location: <root>/.rudu-cache.bin
         let primary_path = root.join(".rudu-cache.bin");
-        
+
         // Check if we can write to the root directory
         if root.is_dir() && is_writable(root) {
             return Ok(primary_path);
@@ -246,35 +252,43 @@ impl Cache {
         // Fallback to XDG cache directory
         let cache_dir = get_xdg_cache_dir()?;
         let rudu_cache_dir = cache_dir.join("rudu");
-        
+
         // Create the rudu cache directory if it doesn't exist
-        std::fs::create_dir_all(&rudu_cache_dir)
-            .with_context(|| format!("Failed to create cache directory: {}", rudu_cache_dir.display()))?;
-        
+        std::fs::create_dir_all(&rudu_cache_dir).with_context(|| {
+            format!(
+                "Failed to create cache directory: {}",
+                rudu_cache_dir.display()
+            )
+        })?;
+
         // Generate a hash of the root path for the filename
         let root_hash = calculate_path_hash(root);
         let cache_file = rudu_cache_dir.join(format!("{:x}.bin", root_hash));
-        
+
         Ok(cache_file)
     }
 
     /// Get the cache file path for a given root directory without performing write test
-    /// 
+    ///
     /// This function always uses the XDG cache directory to avoid changing the
     /// directory's mtime during cache operations.
     pub fn get_cache_path_without_write_test(root: &Path) -> Result<PathBuf> {
         // Always use XDG cache directory to avoid mtime issues
         let cache_dir = get_xdg_cache_dir()?;
         let rudu_cache_dir = cache_dir.join("rudu");
-        
+
         // Create the rudu cache directory if it doesn't exist
-        std::fs::create_dir_all(&rudu_cache_dir)
-            .with_context(|| format!("Failed to create cache directory: {}", rudu_cache_dir.display()))?;
-        
+        std::fs::create_dir_all(&rudu_cache_dir).with_context(|| {
+            format!(
+                "Failed to create cache directory: {}",
+                rudu_cache_dir.display()
+            )
+        })?;
+
         // Generate a hash of the root path for the filename
         let root_hash = calculate_path_hash(root);
         let cache_file = rudu_cache_dir.join(format!("{:x}.bin", root_hash));
-        
+
         Ok(cache_file)
     }
 }
@@ -309,7 +323,7 @@ fn get_xdg_cache_dir() -> Result<PathBuf> {
 fn calculate_path_hash(path: &Path) -> u64 {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
-    
+
     let mut hasher = DefaultHasher::new();
     path.hash(&mut hasher);
     hasher.finish()
@@ -318,10 +332,8 @@ fn calculate_path_hash(path: &Path) -> u64 {
 /// Get root directory's modification time
 pub fn get_root_mtime(path: &Path) -> Option<u64> {
     use std::os::unix::fs::MetadataExt;
-    
-    path.metadata()
-        .ok()
-        .map(|meta| meta.mtime() as u64)
+
+    path.metadata().ok().map(|meta| meta.mtime() as u64)
 }
 
 #[cfg(test)]
@@ -334,7 +346,7 @@ mod tests {
     fn test_cache_header_creation() {
         let root = PathBuf::from("/test/root");
         let header = CacheHeader::new(root.clone());
-        
+
         assert_eq!(header.root_path, root);
         assert_eq!(header.rudu_version, env!("CARGO_PKG_VERSION"));
         assert!(header.creation_time > 0);
@@ -353,7 +365,7 @@ mod tests {
             Some(1000),
             EntryType::File,
         );
-        
+
         assert_eq!(entry.path_hash, 12345);
         assert_eq!(entry.path, path);
         assert_eq!(entry.size, 1024);
@@ -376,10 +388,10 @@ mod tests {
             Some(1000),
             EntryType::File,
         );
-        
+
         // Valid case
         assert!(entry.is_valid(1234567890, 2));
-        
+
         // Invalid cases
         assert!(!entry.is_valid(1234567891, 2)); // Different mtime
         assert!(!entry.is_valid(1234567890, 3)); // Different nlink
@@ -389,10 +401,10 @@ mod tests {
     fn test_cache_operations() {
         let root = PathBuf::from("/test/root");
         let mut cache = Cache::new(root.clone());
-        
+
         assert!(cache.is_empty());
         assert_eq!(cache.len(), 0);
-        
+
         let entry = CacheEntry::new(
             12345,
             PathBuf::from("/test/file"),
@@ -403,16 +415,16 @@ mod tests {
             Some(1000),
             EntryType::File,
         );
-        
+
         cache.add_entry(entry.clone());
-        
+
         assert!(!cache.is_empty());
         assert_eq!(cache.len(), 1);
-        
+
         let retrieved = cache.get_entry(12345);
         assert!(retrieved.is_some());
         assert_eq!(retrieved.unwrap().size, 1024);
-        
+
         let missing = cache.get_entry(54321);
         assert!(missing.is_none());
     }
@@ -421,11 +433,11 @@ mod tests {
     fn test_cache_serialization() {
         let temp_dir = tempdir().unwrap();
         let cache_file = temp_dir.path().join("test_cache.bin");
-        
+
         // Create a cache with some data
         let root = PathBuf::from("/test/root");
         let mut cache = Cache::new(root);
-        
+
         let entry = CacheEntry::new(
             12345,
             PathBuf::from("/test/file"),
@@ -437,18 +449,18 @@ mod tests {
             EntryType::File,
         );
         cache.add_entry(entry);
-        
+
         // Save to file
         cache.save_to_file(&cache_file).unwrap();
-        
+
         // Load from file
         let loaded_cache = Cache::load_from_file(&cache_file).unwrap();
-        
+
         // Verify the loaded cache matches the original
         assert_eq!(loaded_cache.header.root_path, cache.header.root_path);
         assert_eq!(loaded_cache.header.rudu_version, cache.header.rudu_version);
         assert_eq!(loaded_cache.len(), cache.len());
-        
+
         let loaded_entry = loaded_cache.get_entry(12345).unwrap();
         assert_eq!(loaded_entry.size, 1024);
         assert_eq!(loaded_entry.mtime, 1234567890);
@@ -460,11 +472,11 @@ mod tests {
         let path1 = PathBuf::from("/test/path1");
         let path2 = PathBuf::from("/test/path2");
         let path1_dup = PathBuf::from("/test/path1");
-        
+
         let hash1 = calculate_path_hash(&path1);
         let hash2 = calculate_path_hash(&path2);
         let hash1_dup = calculate_path_hash(&path1_dup);
-        
+
         assert_eq!(hash1, hash1_dup);
         assert_ne!(hash1, hash2);
     }
@@ -473,7 +485,7 @@ mod tests {
     fn test_cache_path_generation() {
         let temp_dir = tempdir().unwrap();
         let cache_path = Cache::get_cache_path(temp_dir.path()).unwrap();
-        
+
         // Should prefer the primary location since temp dir is writable
         assert_eq!(cache_path, temp_dir.path().join(".rudu-cache.bin"));
     }
@@ -482,7 +494,7 @@ mod tests {
     fn test_cache_invalidation_version_mismatch() {
         let root = PathBuf::from("/test/root");
         let mut header = CacheHeader::new(root.clone());
-        
+
         // Test version mismatch
         header.rudu_version = "0.0.0".to_string();
         assert!(header.should_invalidate(&root, 604800));
@@ -492,21 +504,23 @@ mod tests {
     fn test_cache_invalidation_ttl_expired() {
         let root = PathBuf::from("/test/root");
         let mut header = CacheHeader::new(root.clone());
-        
+
         // Set creation time to 8 days ago (TTL is 7 days = 604800 seconds)
         header.creation_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
-            .as_secs() - 8 * 24 * 60 * 60; // 8 days ago
-        
+            .as_secs()
+            - 8 * 24 * 60 * 60; // 8 days ago
+
         assert!(header.should_invalidate(&root, 604800));
-        
+
         // Test exact TTL boundary (cache created exactly TTL seconds ago)
         header.creation_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
-            .as_secs() - 604800; // Exactly 7 days ago
-        
+            .as_secs()
+            - 604800; // Exactly 7 days ago
+
         assert!(header.should_invalidate(&root, 604800)); // Should invalidate at TTL boundary
     }
 
@@ -515,7 +529,7 @@ mod tests {
         let root = PathBuf::from("/test/root");
         let header = CacheHeader::new(root.clone());
         let different_root = PathBuf::from("/different/root");
-        
+
         assert!(header.should_invalidate(&different_root, 604800));
     }
 
@@ -523,7 +537,7 @@ mod tests {
     fn test_cache_invalidation_valid_cache() {
         let root = PathBuf::from("/test/root");
         let header = CacheHeader::new(root.clone());
-        
+
         // Should be valid (same version, recent, same path)
         assert!(!header.should_invalidate(&root, 604800));
     }

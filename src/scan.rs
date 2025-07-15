@@ -19,11 +19,11 @@
 //! - Directory sizes are accumulated efficiently using parent path caching
 //! - Single-pass processing reduces memory allocations and improves cache locality
 
+use crate::cache::{load_cache, save_cache_with_mtime, CacheEntry};
 use crate::cli::SortKey;
 use crate::data::{EntryType, FileEntry};
-use crate::utils::{disk_usage, get_owner, sort_entries, get_dir_metadata, path_hash};
-use crate::cache::{load_cache, save_cache_with_mtime, CacheEntry};
-use crate::metrics::{PhaseTimer, PhaseResult};
+use crate::metrics::{PhaseResult, PhaseTimer};
+use crate::utils::{disk_usage, get_dir_metadata, get_owner, path_hash, sort_entries};
 use crate::Args;
 use anyhow::{Context, Result};
 use dashmap::DashMap;
@@ -62,14 +62,14 @@ where
     if let Some(n_threads) = args.threads {
         // Use local thread pool to avoid global contention
         let builder = rayon::ThreadPoolBuilder::new().num_threads(n_threads);
-        
+
         // For work-stealing with uneven trees, we'll handle the optimization in the scan function
         // The main work-stealing logic is implemented in scan_with_work_stealing()
-        
+
         let pool = builder
             .build()
             .context("Failed to create local thread pool")?;
-        
+
         Ok(pool.install(f))
     } else {
         // Use global thread pool
@@ -85,7 +85,7 @@ fn scan_with_work_stealing(
     sort_key: SortKey,
 ) -> Result<ScanResult> {
     use rayon::prelude::*;
-    
+
     let pb = ProgressBar::new_spinner();
     pb.set_style(
         ProgressStyle::default_spinner()
@@ -94,10 +94,10 @@ fn scan_with_work_stealing(
             .context("Failed to set progress template")?,
     );
     pb.enable_steady_tick(Duration::from_millis(100));
-    
+
     let dir_totals: DashMap<PathBuf, u64> = DashMap::new();
     let directory_children: DashMap<PathBuf, u64> = DashMap::new();
-    
+
     // Use scope to spawn tasks for large directories
     let all_entries: Vec<FileEntry> = rayon::scope(|scope| {
         // First pass: collect all entries and identify large directories
@@ -116,24 +116,28 @@ fn scan_with_work_stealing(
                 e.ok()
             })
             .collect();
-        
+
         // Group entries by their parent directory to count entries per directory
-        let mut dir_entry_counts: std::collections::HashMap<PathBuf, usize> = std::collections::HashMap::new();
+        let mut dir_entry_counts: std::collections::HashMap<PathBuf, usize> =
+            std::collections::HashMap::new();
         for entry in &walker_entries {
             if let Some(parent) = entry.path().parent() {
                 *dir_entry_counts.entry(parent.to_path_buf()).or_insert(0) += 1;
             }
         }
-        
+
         // Identify large directories (> 10,000 entries)
         let large_dirs: Vec<_> = dir_entry_counts
             .iter()
             .filter(|(_, &count)| count > 10_000)
             .map(|(path, _)| path.clone())
             .collect();
-        
-        println!("🔍 Found {} large directories (>10k entries) to process with work-stealing", large_dirs.len());
-        
+
+        println!(
+            "🔍 Found {} large directories (>10k entries) to process with work-stealing",
+            large_dirs.len()
+        );
+
         // Process large directories as separate tasks
         for large_dir in large_dirs {
             let large_dir_entries: Vec<_> = walker_entries
@@ -141,20 +145,20 @@ fn scan_with_work_stealing(
                 .filter(|e| e.path().parent() == Some(&large_dir))
                 .cloned()
                 .collect();
-            
+
             let dir_totals_ref = &dir_totals;
             let directory_children_ref = &directory_children;
             let args_ref = args;
-            
+
             scope.spawn(move |_| {
                 // Process this large directory in a separate task
                 large_dir_entries.par_iter().for_each(|entry| {
                     let path = entry.path().to_path_buf();
                     let is_file = entry.file_type().is_file();
-                    
+
                     if is_file {
                         let size = disk_usage(&path);
-                        
+
                         // Accumulate in parent directories
                         let mut current = path.parent();
                         while let Some(parent_path) = current {
@@ -168,37 +172,41 @@ fn scan_with_work_stealing(
                             current = parent_path.parent();
                         }
                     }
-                    
+
                     // Count for inode tracking
                     if args_ref.show_inodes {
                         if let Some(parent) = path.parent() {
-                            *directory_children_ref.entry(parent.to_path_buf()).or_insert(0) += 1;
+                            *directory_children_ref
+                                .entry(parent.to_path_buf())
+                                .or_insert(0) += 1;
                         }
                     }
                 });
             });
         }
-        
+
         // Process remaining entries normally
         let remaining_entries: Vec<_> = walker_entries
             .into_iter()
             .filter(|e| {
                 if let Some(parent) = e.path().parent() {
-                    dir_entry_counts.get(parent).map_or(true, |&count| count <= 10_000)
+                    dir_entry_counts
+                        .get(parent)
+                        .is_none_or(|&count| count <= 10_000)
                 } else {
                     true
                 }
             })
             .collect();
-        
+
         // Process remaining entries in parallel
         remaining_entries.par_iter().for_each(|entry| {
             let path = entry.path().to_path_buf();
             let is_file = entry.file_type().is_file();
-            
+
             if is_file {
                 let size = disk_usage(&path);
-                
+
                 // Accumulate in parent directories
                 let mut current = path.parent();
                 while let Some(parent_path) = current {
@@ -212,7 +220,7 @@ fn scan_with_work_stealing(
                     current = parent_path.parent();
                 }
             }
-            
+
             // Count for inode tracking
             if args.show_inodes {
                 if let Some(parent) = path.parent() {
@@ -220,7 +228,7 @@ fn scan_with_work_stealing(
                 }
             }
         });
-        
+
         // Create FileEntry objects for all entries
         let all_walker_entries: Vec<_> = WalkDir::new(root)
             .follow_links(false)
@@ -234,13 +242,13 @@ fn scan_with_work_stealing(
             })
             .filter_map(|e| e.ok())
             .collect();
-        
+
         all_walker_entries
             .par_iter()
             .map(|entry| {
                 let path = entry.path().to_path_buf();
                 let is_file = entry.file_type().is_file();
-                
+
                 if is_file {
                     FileEntry {
                         path: path.clone(),
@@ -260,7 +268,7 @@ fn scan_with_work_stealing(
                     } else {
                         0
                     };
-                    
+
                     FileEntry {
                         path: path.clone(),
                         size,
@@ -280,12 +288,12 @@ fn scan_with_work_stealing(
             })
             .collect()
     });
-    
+
     pb.finish_with_message("Work-stealing scan complete");
-    
+
     let mut final_entries = all_entries;
     sort_entries(&mut final_entries, sort_key);
-    
+
     Ok(ScanResult {
         entries: final_entries,
         cache_hits: 0,
@@ -328,7 +336,7 @@ pub fn scan_files_and_dirs(
     if args.threads_strategy == crate::thread_pool::ThreadPoolStrategy::WorkStealingUneven {
         return scan_with_work_stealing(root, args, exclude_matcher, sort_key);
     }
-    
+
     // Use incremental scanning by default (unless work-stealing is selected)
     scan_files_and_dirs_incremental(root, args, exclude_matcher, sort_key)
 }
@@ -356,7 +364,7 @@ fn scan_files_and_dirs_legacy(
 
     // Create a channel for the optimized pipeline
     let (tx, rx) = mpsc::channel::<ScanJob>();
-    
+
     // Pre-compute parent paths function
     let get_parent_paths = |path: &Path| -> Vec<PathBuf> {
         let mut parents = Vec::new();
@@ -393,15 +401,19 @@ fn scan_files_and_dirs_legacy(
                 let path = entry.path().to_path_buf();
                 let is_file = entry.file_type().is_file();
                 let size = if is_file { disk_usage(&path) } else { 0 };
-                let parent_paths = if is_file { get_parent_paths(&path) } else { Vec::new() };
-                
+                let parent_paths = if is_file {
+                    get_parent_paths(&path)
+                } else {
+                    Vec::new()
+                };
+
                 let job = ScanJob {
                     path,
                     is_file,
                     size,
                     parent_paths,
                 };
-                
+
                 s.send(job).expect("Failed to send job over channel");
             });
 
@@ -512,10 +524,10 @@ pub fn scan_files_and_dirs_incremental(
     sort_key: SortKey,
 ) -> Result<ScanResult> {
     let mut phase_timings = Vec::new();
-    
+
     // Capture root mtime before any directory modifications
     let root_mtime = crate::cache::model::get_root_mtime(root);
-    
+
     // Cache loading phase
     let cache_timer = PhaseTimer::new("Cache-load");
     let cache = if args.no_cache {
@@ -528,10 +540,10 @@ pub fn scan_files_and_dirs_incremental(
         })
     };
     phase_timings.push(cache_timer.finish());
-    
+
     let cache_hits = std::sync::atomic::AtomicUsize::new(0);
     let cache_misses = std::sync::atomic::AtomicUsize::new(0);
-    
+
     // Setup progress spinner
     let pb = ProgressBar::new_spinner();
     pb.set_style(
@@ -541,13 +553,14 @@ pub fn scan_files_and_dirs_incremental(
             .context("Failed to set progress template")?,
     );
     pb.enable_steady_tick(Duration::from_millis(100));
-    
+
     // Data structures for aggregating results
     let dir_totals: DashMap<PathBuf, u64> = DashMap::new();
     let directory_children: DashMap<PathBuf, u64> = DashMap::new();
-    let mut new_cache_entries: std::collections::HashMap<PathBuf, CacheEntry> = std::collections::HashMap::new();
+    let mut new_cache_entries: std::collections::HashMap<PathBuf, CacheEntry> =
+        std::collections::HashMap::new();
     let cached_dirs: DashMap<PathBuf, CacheEntry> = DashMap::new();
-    
+
     // WalkDir phase
     let walkdir_timer = PhaseTimer::new("WalkDir");
     let walker_entries: Vec<walkdir::DirEntry> = WalkDir::new(root)
@@ -555,16 +568,19 @@ pub fn scan_files_and_dirs_incremental(
         .into_iter()
         .filter_entry(|e| {
             let path = e.path();
-            
+
             // Apply exclusion filters
             if exclude_matcher.is_match(path) {
                 return false;
             }
-            
-            if path.components().any(|c| args.exclude.iter().any(|x| c.as_os_str() == OsStr::new(x))) {
+
+            if path
+                .components()
+                .any(|c| args.exclude.iter().any(|x| c.as_os_str() == OsStr::new(x)))
+            {
                 return false;
             }
-            
+
             // For directories, check if we can skip based on cache
             if e.file_type().is_dir() && !args.no_cache {
                 if let Some(cached_entry) = cache.get(&path.to_path_buf()) {
@@ -572,19 +588,19 @@ pub fn scan_files_and_dirs_incremental(
                         if cached_entry.is_valid(current_metadata.mtime, current_metadata.nlink) {
                             // Cache hit - we can skip this subtree
                             cache_hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            
+
                             // Reuse cached aggregated values
                             dir_totals.insert(path.to_path_buf(), cached_entry.size);
                             if let Some(inode_count) = cached_entry.inode_cnt {
                                 directory_children.insert(path.to_path_buf(), inode_count);
                             }
-                            
+
                             // Store cached directory info for later FileEntry creation
                             cached_dirs.insert(path.to_path_buf(), cached_entry.clone());
-                            
+
                             // Add to new cache (preserving valid entries)
                             new_cache_entries.insert(path.to_path_buf(), cached_entry.clone());
-                            
+
                             pb.tick();
                             return false; // Skip walking into this subtree
                         }
@@ -592,7 +608,7 @@ pub fn scan_files_and_dirs_incremental(
                 }
                 cache_misses.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
-            
+
             true
         })
         .filter_map(|e| {
@@ -601,7 +617,7 @@ pub fn scan_files_and_dirs_incremental(
         })
         .collect();
     phase_timings.push(walkdir_timer.finish());
-    
+
     // Disk I/O phase - process entries that weren't cached
     let disk_io_timer = PhaseTimer::new("Disk-usage I/O");
     let scan_jobs: Vec<ScanJob> = walker_entries
@@ -610,7 +626,7 @@ pub fn scan_files_and_dirs_incremental(
             let path = entry.path().to_path_buf();
             let is_file = entry.file_type().is_file();
             let size = if is_file { disk_usage(&path) } else { 0 };
-            
+
             let parent_paths = if is_file {
                 let mut parents = Vec::new();
                 let mut current = path.parent();
@@ -625,7 +641,7 @@ pub fn scan_files_and_dirs_incremental(
             } else {
                 Vec::new()
             };
-            
+
             ScanJob {
                 path,
                 is_file,
@@ -635,10 +651,10 @@ pub fn scan_files_and_dirs_incremental(
         })
         .collect();
     phase_timings.push(disk_io_timer.finish());
-    
+
     // Aggregation phase
     let aggregation_timer = PhaseTimer::new("Aggregation");
-    
+
     // Accumulate directory sizes from file scan jobs
     for job in &scan_jobs {
         if job.is_file {
@@ -650,7 +666,7 @@ pub fn scan_files_and_dirs_incremental(
             }
         }
     }
-    
+
     // Count children for inode tracking
     if args.show_inodes {
         for job in &scan_jobs {
@@ -659,7 +675,7 @@ pub fn scan_files_and_dirs_incremental(
             }
         }
     }
-    
+
     // Create FileEntry objects from scan jobs and collect cache entries
     let scanned_entries: Vec<(FileEntry, Option<CacheEntry>)> = scan_jobs
         .par_iter()
@@ -684,23 +700,23 @@ pub fn scan_files_and_dirs_incremental(
                 } else {
                     0
                 };
-                
+
                 // Create cache entry for this directory
-                let cache_entry = if let Some(metadata) = get_dir_metadata(&job.path) {
-                    Some(CacheEntry::new(
+                let cache_entry = get_dir_metadata(&job.path).map(|metadata| CacheEntry::new(
                         path_hash(&job.path),
                         job.path.clone(),
                         size,
                         metadata.mtime,
                         metadata.nlink,
-                        if args.show_inodes { Some(inode_count) } else { None },
+                        if args.show_inodes {
+                            Some(inode_count)
+                        } else {
+                            None
+                        },
                         metadata.owner,
                         EntryType::Dir,
-                    ))
-                } else {
-                    None
-                };
-                
+                    ));
+
                 let entry = FileEntry {
                     path: job.path.clone(),
                     size,
@@ -709,17 +725,21 @@ pub fn scan_files_and_dirs_incremental(
                     } else {
                         None
                     },
-                    inodes: if args.show_inodes { Some(inode_count) } else { None },
+                    inodes: if args.show_inodes {
+                        Some(inode_count)
+                    } else {
+                        None
+                    },
                     entry_type: EntryType::Dir,
                 };
-                
+
                 (entry, cache_entry)
             };
-            
+
             (entry, cache_entry)
         })
         .collect();
-    
+
     // Separate entries and cache entries
     let mut file_entries: Vec<FileEntry> = Vec::new();
     for (entry, cache_entry) in scanned_entries {
@@ -729,48 +749,52 @@ pub fn scan_files_and_dirs_incremental(
             new_cache_entries.insert(path, cache_entry);
         }
     }
-    
+
     // Add cached directory entries
     let cached_entries_vec: Vec<(PathBuf, CacheEntry)> = cached_dirs
         .iter()
         .map(|entry| (entry.key().clone(), entry.value().clone()))
         .collect();
-    
+
     let mut cached_entries: Vec<FileEntry> = cached_entries_vec
         .par_iter()
-        .map(|(path, cached_entry)| {
-            FileEntry {
-                path: path.clone(),
-                size: cached_entry.size,
-                owner: if args.show_owner {
-                    get_owner(path)
-                } else {
-                    None
-                },
-                inodes: cached_entry.inode_cnt,
-                entry_type: cached_entry.entry_type,
-            }
+        .map(|(path, cached_entry)| FileEntry {
+            path: path.clone(),
+            size: cached_entry.size,
+            owner: if args.show_owner {
+                get_owner(path)
+            } else {
+                None
+            },
+            inodes: cached_entry.inode_cnt,
+            entry_type: cached_entry.entry_type,
         })
         .collect();
-    
+
     // Combine scanned and cached entries
     let mut all_entries = file_entries;
     all_entries.append(&mut cached_entries);
-    
+
     phase_timings.push(aggregation_timer.finish());
-    
+
     pb.finish_with_message("Incremental scan complete");
-    
+
     // Print cache statistics
     let hits = cache_hits.load(std::sync::atomic::Ordering::Relaxed);
     let misses = cache_misses.load(std::sync::atomic::Ordering::Relaxed);
     if hits > 0 || misses > 0 {
-        println!("📊 Cache stats: {} hits, {} misses ({}% hit rate)", 
-            hits, misses, 
-            if hits + misses > 0 { hits * 100 / (hits + misses) } else { 0 }
+        println!(
+            "📊 Cache stats: {} hits, {} misses ({}% hit rate)",
+            hits,
+            misses,
+            if hits + misses > 0 {
+                hits * 100 / (hits + misses)
+            } else {
+                0
+            }
         );
     }
-    
+
     // Save updated cache (unless disabled)
     if !args.no_cache {
         if let Err(e) = save_cache_with_mtime(root, &new_cache_entries, root_mtime) {
@@ -779,12 +803,12 @@ pub fn scan_files_and_dirs_incremental(
             println!("Cache updated with {} entries", new_cache_entries.len());
         }
     }
-    
+
     // Sort and return results
     sort_entries(&mut all_entries, sort_key);
     let cache_hits_val = hits;
     let cache_total_val = hits + misses;
-    
+
     Ok(ScanResult {
         entries: all_entries,
         cache_hits: cache_hits_val as u64,

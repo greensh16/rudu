@@ -14,7 +14,7 @@
 //!
 //! let mut profile = ProfileData::new();
 //! let timer = PhaseTimer::new("WalkDir");
-//! 
+//!
 //! // ... do work ...
 //!
 //! profile.add_phase(timer.finish());
@@ -201,9 +201,9 @@ impl Default for ProfileData {
 pub fn rss_after_phase() -> Option<u64> {
     let mut system = System::new_all();
     system.refresh_processes();
-    
+
     let current_pid = std::process::id();
-    
+
     // Find the current process
     for (pid, process) in system.processes() {
         if pid.as_u32() == current_pid {
@@ -211,7 +211,7 @@ pub fn rss_after_phase() -> Option<u64> {
             return Some(process.memory() * 1024);
         }
     }
-    
+
     None
 }
 
@@ -234,16 +234,16 @@ pub fn rss_after_phase() -> Option<u64> {
 /// ```
 pub fn print_profile_summary(profile: &ProfileData) {
     println!("\nScan phase timings");
-    
+
     for phase in &profile.phases {
         println!("  {:<15} {:>7} ms", phase.name, phase.duration.as_millis());
     }
-    
+
     if let Some(memory_peak) = profile.memory_peak {
         let memory_mb = memory_peak as f64 / (1024.0 * 1024.0);
         println!("Memory peak:      {:.1} MB", memory_mb);
     }
-    
+
     if profile.cache_total > 0 {
         println!(
             "Cache hits:       {} / {} ({:.1}%)",
@@ -252,7 +252,7 @@ pub fn print_profile_summary(profile: &ProfileData) {
             profile.cache_hit_rate()
         );
     }
-    
+
     // Print any additional metadata
     if !profile.metadata.is_empty() {
         println!("\nAdditional metrics:");
@@ -260,7 +260,7 @@ pub fn print_profile_summary(profile: &ProfileData) {
             println!("  {:<15} {}", key, value);
         }
     }
-    
+
     println!(); // Extra newline for readability
 }
 
@@ -280,9 +280,12 @@ pub fn print_profile_summary(profile: &ProfileData) {
 /// # Example
 /// If the main output is being written to `results.csv`, this function
 /// will create `stats.json` in the same directory.
-pub fn save_stats_json(output_path: &Path, profile: &ProfileData) -> Result<(), Box<dyn std::error::Error>> {
+pub fn save_stats_json(
+    output_path: &Path,
+    profile: &ProfileData,
+) -> Result<(), Box<dyn std::error::Error>> {
     let stats_path = output_path.with_file_name("stats.json");
-    
+
     // Create a structured stats object for JSON output
     let stats = serde_json::json!({
         "scan_phases": profile.phases,
@@ -295,11 +298,11 @@ pub fn save_stats_json(output_path: &Path, profile: &ProfileData) -> Result<(), 
         "metadata": profile.metadata,
         "timestamp": chrono::Utc::now().to_rfc3339()
     });
-    
+
     std::fs::write(&stats_path, serde_json::to_string_pretty(&stats)?)?;
-    
+
     println!("Performance stats saved to: {}", stats_path.display());
-    
+
     Ok(())
 }
 
@@ -346,7 +349,7 @@ mod tests {
         let timer = PhaseTimer::new("test_phase");
         thread::sleep(Duration::from_millis(10));
         let result = timer.finish();
-        
+
         assert_eq!(result.name, "test_phase");
         assert!(result.duration.as_millis() >= 10);
     }
@@ -354,7 +357,7 @@ mod tests {
     #[test]
     fn test_profile_data() {
         let mut profile = ProfileData::new();
-        
+
         let phase1 = PhaseResult {
             name: "Phase 1".to_string(),
             duration: Duration::from_millis(100),
@@ -363,11 +366,11 @@ mod tests {
             name: "Phase 2".to_string(),
             duration: Duration::from_millis(200),
         };
-        
+
         profile.add_phase(phase1);
         profile.add_phase(phase2);
         profile.set_cache_stats(80, 100);
-        
+
         assert_eq!(profile.phases.len(), 2);
         assert_eq!(profile.cache_hit_rate(), 80.0);
         assert_eq!(profile.total_duration(), Duration::from_millis(300));
@@ -393,7 +396,7 @@ mod tests {
             thread::sleep(Duration::from_millis(5));
             42
         });
-        
+
         assert_eq!(result, 42);
         assert_eq!(timing.name, "test_macro");
         assert!(timing.duration.as_millis() >= 5);

@@ -48,18 +48,19 @@ pub fn load_cache(root: &Path, ttl_seconds: u64) -> Option<HashMap<PathBuf, Cach
         Ok(cache) => {
             // Check if cache should be invalidated
             if cache.header.should_invalidate(root, ttl_seconds) {
-                println!("🗑️  Cache invalidated (version mismatch, TTL expired, or root mtime changed)");
+                println!(
+                    "🗑️  Cache invalidated (version mismatch, TTL expired, or root mtime changed)"
+                );
                 // Optionally remove the invalidated cache file
                 let _ = std::fs::remove_file(&cache_path);
                 return None;
             }
             // Convert from hash-based entries back to path-based entries
-            let path_entries: HashMap<PathBuf, CacheEntry> = cache.entries
-                .into_iter()
-                .map(|(_, entry)| (entry.path.clone(), entry))
+            let path_entries: HashMap<PathBuf, CacheEntry> = cache
+                .entries.into_values().map(|entry| (entry.path.clone(), entry))
                 .collect();
             Some(path_entries)
-        },
+        }
         Err(_) => None, // If loading fails, return None (cache will be regenerated)
     }
 }
@@ -93,7 +94,11 @@ pub fn save_cache(root: &Path, cache: &HashMap<PathBuf, CacheEntry>) -> Result<(
 ///
 /// # Returns
 /// * `Result<()>` - Success or error information
-pub fn save_cache_with_mtime(root: &Path, cache: &HashMap<PathBuf, CacheEntry>, root_mtime: Option<u64>) -> Result<()> {
+pub fn save_cache_with_mtime(
+    root: &Path,
+    cache: &HashMap<PathBuf, CacheEntry>,
+    root_mtime: Option<u64>,
+) -> Result<()> {
     let cache_path = model::Cache::get_cache_path_without_write_test(root)
         .context("Failed to determine cache file path")?;
 
@@ -114,7 +119,7 @@ pub fn save_cache_with_mtime(root: &Path, cache: &HashMap<PathBuf, CacheEntry>, 
             (crate::utils::path_hash(path), new_entry)
         })
         .collect();
-    
+
     let full_cache = model::Cache { header, entries };
 
     save_cache_to_file(&cache_path, &full_cache)
@@ -126,7 +131,8 @@ fn load_cache_from_file(path: &Path) -> Result<model::Cache> {
     let file = File::open(path)
         .with_context(|| format!("Failed to open cache file: {}", path.display()))?;
 
-    let file_len = file.metadata()
+    let file_len = file
+        .metadata()
         .with_context(|| format!("Failed to get file metadata: {}", path.display()))?
         .len();
 
@@ -135,7 +141,7 @@ fn load_cache_from_file(path: &Path) -> Result<model::Cache> {
     }
 
     // Create memory-mapped file for efficient access
-    let mmap = unsafe { 
+    let mmap = unsafe {
         Mmap::map(&file)
             .with_context(|| format!("Failed to memory-map cache file: {}", path.display()))?
     };
@@ -147,9 +153,10 @@ fn load_cache_from_file(path: &Path) -> Result<model::Cache> {
             // Try to deserialize as old format (HashMap<PathBuf, CacheEntry>)
             let legacy_cache: HashMap<PathBuf, CacheEntry> = bincode::deserialize(&mmap)
                 .with_context(|| format!("Failed to deserialize cache from: {}", path.display()))?;
-            
+
             // Convert legacy format to new format
-            let header = model::CacheHeader::new(path.parent().unwrap_or(Path::new("/")).to_path_buf());
+            let header =
+                model::CacheHeader::new(path.parent().unwrap_or(Path::new("/")).to_path_buf());
             let entries: HashMap<u64, CacheEntry> = legacy_cache
                 .into_iter()
                 .map(|(path, mut entry)| {
@@ -158,7 +165,7 @@ fn load_cache_from_file(path: &Path) -> Result<model::Cache> {
                     (crate::utils::path_hash(&path), entry)
                 })
                 .collect();
-            
+
             Ok(model::Cache { header, entries })
         }
     }
@@ -167,11 +174,10 @@ fn load_cache_from_file(path: &Path) -> Result<model::Cache> {
 /// Save cache to a specific file using efficient serialization
 fn save_cache_to_file(path: &Path, cache: &model::Cache) -> Result<()> {
     // First serialize to get the size
-    let serialized_data = bincode::serialize(cache)
-        .context("Failed to serialize cache data")?;
+    let serialized_data = bincode::serialize(cache).context("Failed to serialize cache data")?;
 
     // Try memory-mapped IO first, fall back to regular file IO if it fails
-    if let Err(_) = try_save_with_mmap(path, &serialized_data) {
+    if try_save_with_mmap(path, &serialized_data).is_err() {
         // Fallback to regular file IO
         save_with_regular_io(path, &serialized_data)
             .with_context(|| format!("Failed to save cache to: {}", path.display()))?;
@@ -203,8 +209,12 @@ fn try_save_with_mmap(path: &Path, data: &[u8]) -> Result<()> {
 
     // Create memory-mapped file for writing
     let mut mmap = unsafe {
-        MmapMut::map_mut(&file)
-            .with_context(|| format!("Failed to memory-map cache file for writing: {}", path.display()))?
+        MmapMut::map_mut(&file).with_context(|| {
+            format!(
+                "Failed to memory-map cache file for writing: {}",
+                path.display()
+            )
+        })?
     };
 
     // Copy the serialized data to the memory-mapped region
@@ -228,7 +238,7 @@ fn try_save_with_mmap(path: &Path, data: &[u8]) -> Result<()> {
 /// Fallback to regular file IO
 fn save_with_regular_io(path: &Path, data: &[u8]) -> Result<()> {
     use std::io::Write;
-    
+
     let mut file = OpenOptions::new()
         .write(true)
         .create(true)

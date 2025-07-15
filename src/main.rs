@@ -39,22 +39,25 @@ pub mod cli;
 use cli::{Args, CsvEntry};
 mod data;
 pub use data::{EntryType, FileEntry};
-pub mod output;
-pub mod thread_pool;
 pub mod cache;
 pub mod metrics;
+pub mod output;
+pub mod thread_pool;
+use metrics::{print_profile_summary, rss_after_phase, save_stats_json, PhaseTimer, ProfileData};
 use thread_pool::{configure_pool, ThreadPoolStrategy};
-use metrics::{PhaseTimer, ProfileData, print_profile_summary, save_stats_json, rss_after_phase};
 
 /// Sets up the thread pool configuration based on CLI arguments.
 fn setup_thread_pool(args: &Args) -> Result<()> {
     // Skip global thread pool setup when --threads is specified
     // as we'll use local thread pools in the scan module instead
     if args.threads.is_some() {
-        println!("🔧 Using local thread pool with {} threads", args.threads.unwrap());
+        println!(
+            "🔧 Using local thread pool with {} threads",
+            args.threads.unwrap()
+        );
         return Ok(());
     }
-    
+
     // Use the new thread pool configuration system for other strategies
     let n_threads = match args.threads_strategy {
         ThreadPoolStrategy::Default => num_cpus::get(),
@@ -63,7 +66,7 @@ fn setup_thread_pool(args: &Args) -> Result<()> {
         ThreadPoolStrategy::IOHeavy => num_cpus::get() * 2,
         ThreadPoolStrategy::WorkStealingUneven => num_cpus::get(),
     };
-    
+
     configure_pool(args.threads_strategy, n_threads)?;
     Ok(())
 }
@@ -177,12 +180,12 @@ fn main() -> Result<()> {
     } else {
         None
     };
-    
+
     setup_thread_pool(&args)?;
-    
+
     let expanded_patterns = expand_exclude_patterns(&args.exclude);
     let exclude_matcher = build_exclude_matcher(&expanded_patterns)?;
-    
+
     if let (Some(ref mut prof), Some(timer)) = (profile.as_mut(), setup_timer) {
         prof.add_phase(timer.finish());
     }
@@ -193,12 +196,12 @@ fn main() -> Result<()> {
     } else {
         None
     };
-    
+
     let scan_result = scan_files_and_dirs(root, &args, &exclude_matcher, args.sort)?;
-    
+
     if let (Some(ref mut prof), Some(timer)) = (profile.as_mut(), scan_timer) {
         let total_scan_time = timer.finish();
-        
+
         // Add detailed phase timings from scan result, or fallback to total time
         if !scan_result.phase_timings.is_empty() {
             for phase in scan_result.phase_timings {
@@ -207,7 +210,7 @@ fn main() -> Result<()> {
         } else {
             prof.add_phase(total_scan_time);
         }
-        
+
         // Add cache statistics to profile
         prof.set_cache_stats(scan_result.cache_hits, scan_result.cache_total);
     }
@@ -218,9 +221,9 @@ fn main() -> Result<()> {
     } else {
         None
     };
-    
+
     let processed_entries = process_entries(root, &args, scan_result.entries);
-    
+
     if let (Some(ref mut prof), Some(timer)) = (profile.as_mut(), process_timer) {
         prof.add_phase(timer.finish());
     }
@@ -231,9 +234,9 @@ fn main() -> Result<()> {
     } else {
         None
     };
-    
+
     output_results(&processed_entries, &args, root)?;
-    
+
     if let (Some(ref mut prof), Some(timer)) = (profile.as_mut(), output_timer) {
         prof.add_phase(timer.finish());
     }
@@ -241,17 +244,17 @@ fn main() -> Result<()> {
     // Capture final memory usage and display profile if enabled
     if let Some(mut prof) = profile {
         prof.memory_peak = rss_after_phase();
-        
+
         // Add metadata about the scan
         prof.add_metadata("entries_processed", &processed_entries.len().to_string());
         prof.add_metadata("root_path", &root.display().to_string());
         if let Some(depth) = args.depth {
             prof.add_metadata("max_depth", &depth.to_string());
         }
-        
+
         // Display profile summary
         print_profile_summary(&prof);
-        
+
         // Save stats.json if output is being written to a file
         if let Some(ref output_path) = args.output {
             if let Err(e) = save_stats_json(std::path::Path::new(output_path), &prof) {

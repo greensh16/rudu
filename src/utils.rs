@@ -14,10 +14,10 @@ use crate::data::{EntryType, FileEntry};
 use anyhow::{Context, Result};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use libc::{getpwuid, stat as libc_stat, stat};
-use std::os::unix::ffi::OsStrExt;
-use std::{ffi::CStr, ffi::CString, path::Path};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::os::unix::ffi::OsStrExt;
+use std::{ffi::CStr, ffi::CString, path::Path};
 
 /// Returns the actual disk usage (in bytes) of a file or directory.
 ///
@@ -151,6 +151,7 @@ pub fn build_exclude_matcher(patterns: &[String]) -> Result<GlobSet> {
 pub struct DirMetadata {
     pub mtime: u64,
     pub nlink: u64,
+    #[allow(dead_code)]
     pub size: u64,
     pub owner: Option<u32>,
 }
@@ -159,11 +160,11 @@ pub struct DirMetadata {
 pub fn get_dir_metadata(path: &Path) -> Option<DirMetadata> {
     let c_path = CString::new(path.as_os_str().as_bytes()).ok()?;
     let mut stat_buf: stat = unsafe { std::mem::zeroed() };
-    
+
     if unsafe { libc_stat(c_path.as_ptr(), &mut stat_buf) } != 0 {
         return None;
     }
-    
+
     Some(DirMetadata {
         mtime: stat_buf.st_mtime as u64,
         nlink: stat_buf.st_nlink as u64,
