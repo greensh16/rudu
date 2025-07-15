@@ -88,7 +88,7 @@ match load_cache_from_file(&cache_path) {
                 .collect();
             path_entries
         }
-        Err(e) => {
+        Err(_e) => {
             HashMap::new() // If loading fails, return an empty cache (cache will be regenerated)
         }
     }
