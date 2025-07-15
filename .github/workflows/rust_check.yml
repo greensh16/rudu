@@ -1,30 +1,121 @@
-name: Build
+name: Build and Benchmark
 
 on:
   push:
     branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
+  schedule:
+    # Run benchmarks weekly on Sundays at 3 AM UTC
+    - cron: '0 3 * * 0'
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   build:
-
-    runs-on: ubuntu-latest
-
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        rust: [stable]
+    
+    runs-on: ${{ matrix.os }}
+    
     steps:
     - uses: actions/checkout@v4
     - name: Install Rust
       uses: actions-rs/toolchain@v1
       with:
-        toolchain: stable
+        toolchain: ${{ matrix.rust }}
         components: rustfmt, clippy
         override: true
-    - name: Check formatting
+    - name: Check formatting (Ubuntu only)
+      if: matrix.os == 'ubuntu-latest'
       run: cargo fmt -- --check
+    - name: Run clippy
+      run: cargo clippy --all-targets -- -D warnings
     - name: Build
       run: cargo build --verbose
     - name: Run tests
       run: cargo test --verbose
+
+  benchmarks:
+    needs: build
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        rust: [stable]
+    
+    runs-on: ${{ matrix.os }}
+    
+    # Only run benchmarks on main branch or scheduled runs
+    if: github.ref == 'refs/heads/main' || github.event_name == 'schedule'
+    
+    steps:
+    - uses: actions/checkout@v4
+    - name: Install Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: ${{ matrix.rust }}
+        override: true
+    - name: Install Linux dependencies
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libjemalloc-dev
+    - name: Install macOS dependencies
+      if: matrix.os == 'macos-latest'
+      run: |
+        brew install jemalloc
+    - name: Build benchmarks
+      run: cargo build --release --benches
+    - name: Run basic benchmarks
+      run: |
+        cargo bench --bench scan_benchmark -- --output-format json --save-baseline ${{ matrix.os }}-baseline
+    - name: Run memory benchmarks (Linux only)
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        cargo bench --bench memory_benchmark -- --output-format json --save-baseline linux-memory-baseline
+    - name: Run cache benchmarks
+      run: |
+        cargo bench --bench scan_benchmark cache_benchmarks -- --output-format json --save-baseline ${{ matrix.os }}-cache-baseline
+    - name: Upload benchmark results
+      uses: actions/upload-artifact@v4
+      with:
+        name: benchmark-results-${{ matrix.os }}
+        path: |
+          target/criterion/
+          **/*-baseline/
+        retention-days: 30
+
+  benchmark-comparison:
+    needs: benchmarks
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || github.event_name == 'schedule'
+    
+    steps:
+    - uses: actions/checkout@v4
+    - name: Download Ubuntu benchmark results
+      uses: actions/download-artifact@v4
+      with:
+        name: benchmark-results-ubuntu-latest
+        path: ubuntu-results/
+    - name: Download macOS benchmark results
+      uses: actions/download-artifact@v4
+      with:
+        name: benchmark-results-macos-latest
+        path: macos-results/
+    - name: Compare OS performance
+      run: |
+        echo "# Benchmark Results Comparison" >> $GITHUB_STEP_SUMMARY
+        echo "## OS Performance Differences" >> $GITHUB_STEP_SUMMARY
+        echo "Results show performance characteristics across different operating systems." >> $GITHUB_STEP_SUMMARY
+        echo "Ubuntu results: ubuntu-results/" >> $GITHUB_STEP_SUMMARY
+        echo "macOS results: macos-results/" >> $GITHUB_STEP_SUMMARY
+        
+        # Add performance insights to step summary
+        echo "## Key Metrics" >> $GITHUB_STEP_SUMMARY
+        echo "- **Cache Hit Performance**: Measures scan speed with 100% cache hit rate" >> $GITHUB_STEP_SUMMARY
+        echo "- **Cache Miss Performance**: Measures scan speed with 50% cache miss rate" >> $GITHUB_STEP_SUMMARY
+        echo "- **Deep Tree Incremental**: Measures performance on deep directory trees with 10% file changes" >> $GITHUB_STEP_SUMMARY
+        echo "- **Memory Usage**: Tracks peak memory consumption during scans (Linux only)" >> $GITHUB_STEP_SUMMARY

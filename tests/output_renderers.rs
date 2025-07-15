@@ -1,6 +1,7 @@
 use rudu::cli::{Args, SortKey};
 use rudu::data::{EntryType, FileEntry};
 use rudu::output::{csv, terminal};
+use rudu::thread_pool::ThreadPoolStrategy;
 use std::path::PathBuf;
 
 #[test]
@@ -32,6 +33,9 @@ fn test_csv_renderer_works() {
         output: None,
         threads: None,
         show_inodes: true,
+        threads_strategy: ThreadPoolStrategy::Default,
+        no_cache: false,
+        cache_ttl: 604800,
     };
 
     // Test that CSV rendering doesn't panic or error
@@ -68,6 +72,9 @@ fn test_terminal_renderer_works() {
         output: None,
         threads: None,
         show_inodes: true,
+        threads_strategy: ThreadPoolStrategy::Default,
+        no_cache: false,
+        cache_ttl: 604800,
     };
 
     // Test that terminal rendering doesn't panic or error

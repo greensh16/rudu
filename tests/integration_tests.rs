@@ -1,5 +1,6 @@
 use rudu::cli::{Args, SortKey};
 use rudu::scan::scan_files_and_dirs;
+use rudu::thread_pool::ThreadPoolStrategy;
 use rudu::utils::{build_exclude_matcher, expand_exclude_patterns};
 use std::fs;
 use tempfile::TempDir;
@@ -47,6 +48,9 @@ fn test_inode_counting_with_tempdir() {
         output: None,
         threads: None,
         show_inodes: true,
+        threads_strategy: ThreadPoolStrategy::Default,
+        no_cache: false,
+        cache_ttl: 604800,
     };
 
     let exclude_patterns = expand_exclude_patterns(&args.exclude);
@@ -138,6 +142,9 @@ fn test_exclude_patterns_with_tempdir() {
         output: None,
         threads: None,
         show_inodes: true,
+        threads_strategy: ThreadPoolStrategy::Default,
+        no_cache: false,
+        cache_ttl: 604800,
     };
 
     let exclude_patterns = expand_exclude_patterns(&args.exclude);
@@ -210,6 +217,9 @@ fn test_depth_filtering_with_tempdir() {
         output: None,
         threads: None,
         show_inodes: true,
+        threads_strategy: ThreadPoolStrategy::Default,
+        no_cache: false,
+        cache_ttl: 604800,
     };
 
     let exclude_patterns = expand_exclude_patterns(&args.exclude);
@@ -267,6 +277,9 @@ fn test_size_calculation_with_tempdir() {
         output: None,
         threads: None,
         show_inodes: false,
+        threads_strategy: ThreadPoolStrategy::Default,
+        no_cache: false,
+        cache_ttl: 604800,
     };
 
     let exclude_patterns = expand_exclude_patterns(&args.exclude);

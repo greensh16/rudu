@@ -50,6 +50,10 @@ While `du` has been a reliable tool for decades, it's single-threaded, limited i
 - ✅ **Thread control** (`--threads N`) - Specify number of CPU threads to use
 - ✅ **Progress indicator** - Real-time progress bar during scanning
 - ✅ **Resource efficiency** - Optimized for both speed and memory usage
+- ✅ **Intelligent caching** - Automatically caches scan results for faster subsequent runs
+- ✅ **Incremental scanning** - Only rescans changed directories, skipping unchanged subtrees
+- ✅ **Performance profiling** (`--profile`) - Detailed timing breakdowns for optimization
+- ✅ **Cache control** (`--no-cache`, `--cache-ttl`) - Fine-grained cache management
 ---
 
 ## Example Usage
@@ -108,6 +112,30 @@ rudu /large/directory --threads 4
 rudu /data --threads 1
 ```
 
+### Caching and Incremental Scanning
+```bash
+# Enable caching for faster subsequent scans
+rudu /large/directory  # Automatically caches results
+
+# Disable caching for fresh scan
+rudu /large/directory --no-cache
+
+# Set custom cache TTL (time-to-live) in seconds
+rudu /data --cache-ttl 3600  # Cache valid for 1 hour
+
+# Incremental scanning (only scans changed directories)
+rudu /project  # Uses cache to skip unchanged directories
+```
+
+### Performance Profiling
+```bash
+# Enable detailed performance profiling
+rudu /large/directory --profile
+
+# Combine profiling with other options
+rudu /project --profile --threads 8 --depth 2
+```
+
 ---
 
 ## Benchmark Results
@@ -135,12 +163,18 @@ Performance comparison between `rudu` and traditional `du` on macOS:
   - CSV output for analysis
   - Safety-critical environments
   - Integration with modern toolchains
+  - Repeated scans (caching benefits)
+  - Performance analysis and optimization
 
 - **Use `du` for**:
   - Very small directories (<1,000 files)
   - Simple, quick size checks
   - Systems where Rust binaries aren't available
   - Legacy script compatibility
+
+### Performance Documentation
+
+For detailed performance analysis, optimization strategies, and benchmarking results, see the [Performance Guide](docs/performance.md).
 
 ---
 
@@ -178,9 +212,9 @@ cargo install rudu
 
 ### Potential Enhancements
 - **Plugin system**: Custom analyzers and formatters
-- **Caching**: Speed up repeated scans
-- **Incremental scanning**: Only scan changed directories
 - **Cloud integration**: Direct analysis of cloud storage
+- **Watch mode**: Real-time monitoring of directory changes
+- **Compression analysis**: Identify highly compressible files
 
 ---
 
