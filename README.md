@@ -90,6 +90,8 @@ rudu /data --sort size
 # Show ownership information
 rudu /data --show-owner
 
+Note: Automatic Fallback: When getpwuid_r() fails, automatically falls back to using the getent command as a subprocess
+
 # Show inode usage (file/directory counts)
 rudu /data --show-inodes
 ```
