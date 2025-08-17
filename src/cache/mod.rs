@@ -410,14 +410,20 @@ mod cache_root_tests {
         let temp_dir = TempDir::new().unwrap();
         let custom_cache_path = temp_dir.path().to_string_lossy().to_string();
 
+        // Store original values for cleanup
+        let original_rudu_cache_dir = env::var("RUDU_CACHE_DIR").ok();
+        let original_cache_enabled = is_enabled();
+
         // Set RUDU_CACHE_DIR environment variable
         env::set_var("RUDU_CACHE_DIR", &custom_cache_path);
 
         // Ensure caching is enabled for the test
         set_enabled(true);
 
-        // Create test cache
-        let root_path = PathBuf::from(".");
+        // Use a temp directory as root path to avoid mtime issues with current directory
+        let test_root_dir = TempDir::new().unwrap();
+        let root_path = test_root_dir.path();
+
         let mut cache = HashMap::new();
         let entry = CacheEntry::new(
             12345,
@@ -431,22 +437,31 @@ mod cache_root_tests {
         );
         cache.insert(PathBuf::from("test.txt"), entry);
 
-        // Save cache (should use custom directory)
-        let save_result = save_cache(&root_path, &cache);
+        // Capture the root directory's mtime before saving to avoid cache invalidation
+        let root_mtime = crate::cache::model::get_root_mtime(root_path);
+
+        // Save cache with specific mtime (should use custom directory)
+        let save_result = save_cache_with_mtime(root_path, &cache, root_mtime);
         assert!(save_result.is_ok());
 
         // Load cache (should load from custom directory)
-        let loaded_cache = load_cache(&root_path, 604800);
+        let loaded_cache = load_cache(root_path, 604800);
         assert_eq!(loaded_cache.len(), 1);
         assert!(loaded_cache.contains_key(&PathBuf::from("test.txt")));
 
         // Test invalidation
-        let was_invalidated = invalidate_cache(&root_path);
+        let was_invalidated = invalidate_cache(root_path);
         assert!(was_invalidated.is_ok());
         assert!(was_invalidated.unwrap());
 
-        // Clean up
-        env::remove_var("RUDU_CACHE_DIR");
+        // Clean up environment variables
+        match original_rudu_cache_dir {
+            Some(value) => env::set_var("RUDU_CACHE_DIR", value),
+            None => env::remove_var("RUDU_CACHE_DIR"),
+        }
+
+        // Restore original cache enabled state
+        set_enabled(original_cache_enabled);
     }
 
     #[test]
