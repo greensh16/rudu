@@ -22,6 +22,7 @@
 use crate::cache::{load_cache, save_cache_with_mtime, CacheEntry};
 use crate::cli::SortKey;
 use crate::data::{EntryType, FileEntry};
+use crate::memory::MemoryMonitor;
 use crate::metrics::{PhaseResult, PhaseTimer};
 use crate::utils::{disk_usage, get_dir_metadata, get_owner, path_hash, sort_entries};
 use crate::Args;
@@ -31,9 +32,20 @@ use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 use walkdir::WalkDir;
+
+/// Memory limit status for scanning operations
+#[derive(Debug, Clone, PartialEq)]
+pub enum MemoryLimitStatus {
+    /// Scan completed normally without memory pressure
+    Normal,
+    /// Scan completed but was nearing memory limit (disabled some features)
+    NearingLimit,
+    /// Scan was terminated due to memory limit being exceeded
+    MemoryLimitHit,
+}
 
 /// Result of a scan operation including entries and cache statistics
 #[derive(Debug)]
@@ -41,7 +53,23 @@ pub struct ScanResult {
     pub entries: Vec<FileEntry>,
     pub cache_hits: u64,
     pub cache_total: u64,
+    pub memory_limit_hit: bool,
     pub phase_timings: Vec<PhaseResult>,
+    #[allow(dead_code)]
+    pub memory_status: MemoryLimitStatus,
+}
+
+impl Default for ScanResult {
+    fn default() -> Self {
+        Self {
+            entries: Vec::new(),
+            cache_hits: 0,
+            cache_total: 0,
+            memory_limit_hit: false,
+            phase_timings: Vec::new(),
+            memory_status: MemoryLimitStatus::Normal,
+        }
+    }
 }
 
 /// Lightweight job struct to minimize per-entry allocation during parallel processing
@@ -298,7 +326,9 @@ fn scan_with_work_stealing(
         entries: final_entries,
         cache_hits: 0,
         cache_total: 0,
+        memory_limit_hit: false,
         phase_timings: Vec::new(),
+        memory_status: MemoryLimitStatus::Normal,
     })
 }
 
@@ -415,9 +445,8 @@ fn scan_files_and_dirs_legacy(
                 };
 
                 // Handle channel send failure gracefully instead of panicking
-                if let Err(_) = s.send(job) {
+                if s.send(job).is_err() {
                     // Channel receiver dropped, stop processing
-                    return;
                 }
             });
 
@@ -507,8 +536,36 @@ fn scan_files_and_dirs_legacy(
         entries: all_entries,
         cache_hits: 0,
         cache_total: 0,
+        memory_limit_hit: false,
         phase_timings: Vec::new(),
+        memory_status: MemoryLimitStatus::Normal,
     })
+}
+
+/// Scan files and directories with memory monitoring support
+///
+/// This function accepts an optional memory monitor that will check memory usage
+/// during the scan and adjust behavior accordingly:
+/// - When nearing the limit: disables caching and other memory-heavy features
+/// - When exceeding the limit: terminates the scan early and returns partial results
+///
+/// # Arguments
+/// * `root` - The root path to start scanning from
+/// * `args` - Command line arguments controlling scan behavior
+/// * `exclude_matcher` - Compiled glob patterns for excluding files/directories
+/// * `sort_key` - How to sort the resulting entries (by name or size)
+/// * `monitor` - Optional memory monitor for limiting memory usage
+///
+/// # Returns
+/// * `Result<ScanResult>` - Scan results with memory status information
+pub fn scan_files_and_dirs_with_memory_monitor(
+    root: &Path,
+    args: &Args,
+    exclude_matcher: &globset::GlobSet,
+    sort_key: SortKey,
+    monitor: Option<Arc<Mutex<MemoryMonitor>>>,
+) -> Result<ScanResult> {
+    scan_files_and_dirs_with_monitor(root, args, exclude_matcher, sort_key, monitor)
 }
 
 /// Incremental scanning with caching support
@@ -526,6 +583,19 @@ pub fn scan_files_and_dirs_incremental(
     args: &Args,
     exclude_matcher: &globset::GlobSet,
     sort_key: SortKey,
+) -> Result<ScanResult> {
+    scan_files_and_dirs_with_monitor(root, args, exclude_matcher, sort_key, None)
+}
+
+/// Incremental scanning with optional memory monitoring
+///
+/// This is the main implementation that supports memory monitoring.
+fn scan_files_and_dirs_with_monitor(
+    root: &Path,
+    args: &Args,
+    exclude_matcher: &globset::GlobSet,
+    sort_key: SortKey,
+    monitor: Option<Arc<Mutex<MemoryMonitor>>>,
 ) -> Result<ScanResult> {
     let mut phase_timings = Vec::new();
 
@@ -568,9 +638,22 @@ pub fn scan_files_and_dirs_incremental(
         std::collections::HashMap::new();
     let cached_dirs: DashMap<PathBuf, CacheEntry> = DashMap::new();
 
+    // Memory monitoring state
+    let mut memory_nearing_limit = false;
+    let mut entry_counter = 0;
+    // Calculate check interval based on CLI setting - check more frequently if interval is shorter
+    let memory_check_interval: usize = if args.memory_check_interval_ms <= 100 {
+        500 // Very frequent checks for short intervals
+    } else if args.memory_check_interval_ms <= 200 {
+        1000 // Normal interval for default setting
+    } else {
+        2000 // Less frequent checks for longer intervals to reduce overhead
+    };
+
     // WalkDir phase
     let walkdir_timer = PhaseTimer::new("WalkDir");
-    let walker_entries: Vec<walkdir::DirEntry> = WalkDir::new(root)
+
+    let walker_iter = WalkDir::new(root)
         .follow_links(false)
         .into_iter()
         .filter_entry(|e| {
@@ -608,6 +691,43 @@ pub fn scan_files_and_dirs_incremental(
                             // Add to new cache (preserving valid entries)
                             new_cache_entries.insert(path.to_path_buf(), cached_entry.clone());
 
+                            // Also restore any cached subdirectories within this subtree
+                            // that would be visible given the depth constraints and current exclusion patterns
+                            for (cached_path, cached_subentry) in cache.iter() {
+                                // Check if this is a subdirectory of the current path
+                                if cached_path.starts_with(path) && cached_path != path {
+                                    let sub_depth = crate::utils::path_depth(root, cached_path);
+
+                                    // Apply current exclusion patterns to cached entries
+                                    let excluded_by_glob = exclude_matcher.is_match(cached_path);
+                                    let excluded_by_component = cached_path.components().any(|c| {
+                                        args.exclude.iter().any(|x| c.as_os_str() == OsStr::new(x))
+                                    });
+
+                                    // Only include subdirectories that pass all filters
+                                    let should_include = match args.depth {
+                                        Some(max_depth) => sub_depth <= max_depth,
+                                        None => true,
+                                    } && !excluded_by_glob
+                                        && !excluded_by_component;
+
+                                    if should_include {
+                                        cached_dirs
+                                            .insert(cached_path.clone(), cached_subentry.clone());
+                                        new_cache_entries
+                                            .insert(cached_path.clone(), cached_subentry.clone());
+
+                                        // Also restore the size and inode data for subdirectories
+                                        dir_totals
+                                            .insert(cached_path.clone(), cached_subentry.size);
+                                        if let Some(inode_count) = cached_subentry.inode_cnt {
+                                            directory_children
+                                                .insert(cached_path.clone(), inode_count);
+                                        }
+                                    }
+                                }
+                            }
+
                             pb.tick();
                             return false; // Skip walking into this subtree
                         }
@@ -617,12 +737,39 @@ pub fn scan_files_and_dirs_incremental(
             }
 
             true
-        })
-        .filter_map(|e| {
-            pb.tick();
-            e.ok()
-        })
-        .collect();
+        });
+
+    // Collect entries with memory monitoring
+    let mut walker_entries: Vec<walkdir::DirEntry> = Vec::new();
+    let mut memory_exceeded = false;
+
+    for entry in walker_iter.flatten() {
+        pb.tick();
+
+        // Increment counter and check memory every N entries
+        entry_counter += 1;
+        if entry_counter % memory_check_interval == 0 {
+            if let Some(ref monitor) = monitor {
+                if let Ok(mut mem_monitor) = monitor.lock() {
+                    if mem_monitor.exceeds_limit() {
+                        println!("⚠️  Memory limit exceeded, terminating scan early");
+                        memory_exceeded = true;
+                        break;
+                    } else if !memory_nearing_limit && mem_monitor.nearing_limit() {
+                        println!(
+                            "⚠️  Memory usage nearing limit, disabling cache and heavy features"
+                        );
+                        memory_nearing_limit = true;
+                        // Disable caching dynamically to reduce memory usage
+                        crate::cache::set_enabled(false);
+                    }
+                }
+            }
+        }
+
+        walker_entries.push(entry);
+    }
+
     phase_timings.push(walkdir_timer.finish());
 
     // Disk I/O phase - process entries that weren't cached
@@ -674,8 +821,8 @@ pub fn scan_files_and_dirs_incremental(
         }
     }
 
-    // Count children for inode tracking
-    if args.show_inodes {
+    // Count children for inode tracking - skip if memory nearing limit to save memory
+    if args.show_inodes && !memory_nearing_limit {
         for job in &scan_jobs {
             if let Some(parent) = job.path.parent() {
                 *directory_children.entry(parent.to_path_buf()).or_insert(0) += 1;
@@ -709,7 +856,8 @@ pub fn scan_files_and_dirs_incremental(
                 };
 
                 // Create cache entry for this directory
-                let cache_entry = get_dir_metadata(&job.path).map(|metadata| CacheEntry::new(
+                let cache_entry = get_dir_metadata(&job.path).map(|metadata| {
+                    CacheEntry::new(
                         path_hash(&job.path),
                         job.path.clone(),
                         size,
@@ -722,7 +870,8 @@ pub fn scan_files_and_dirs_incremental(
                         },
                         metadata.owner,
                         EntryType::Dir,
-                    ));
+                    )
+                });
 
                 let entry = FileEntry {
                     path: job.path.clone(),
@@ -802,13 +951,15 @@ pub fn scan_files_and_dirs_incremental(
         );
     }
 
-    // Save updated cache (unless disabled)
-    if !args.no_cache {
+    // Save updated cache (unless disabled or memory constrained)
+    if !args.no_cache && !memory_nearing_limit {
         if let Err(e) = save_cache_with_mtime(root, &new_cache_entries, root_mtime) {
             eprintln!("Failed to save cache: {}", e);
         } else {
             println!("Cache updated with {} entries", new_cache_entries.len());
         }
+    } else if memory_nearing_limit {
+        println!("⚠️  Cache saving disabled due to memory constraints");
     }
 
     // Sort and return results
@@ -816,10 +967,21 @@ pub fn scan_files_and_dirs_incremental(
     let cache_hits_val = hits;
     let cache_total_val = hits + misses;
 
+    // Determine memory status based on what happened during scan
+    let memory_status = if memory_exceeded {
+        MemoryLimitStatus::MemoryLimitHit
+    } else if memory_nearing_limit {
+        MemoryLimitStatus::NearingLimit
+    } else {
+        MemoryLimitStatus::Normal
+    };
+
     Ok(ScanResult {
         entries: all_entries,
         cache_hits: cache_hits_val as u64,
         cache_total: cache_total_val as u64,
+        memory_limit_hit: memory_exceeded,
         phase_timings,
+        memory_status,
     })
 }

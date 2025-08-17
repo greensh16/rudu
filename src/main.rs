@@ -40,6 +40,7 @@ use cli::{Args, CsvEntry};
 mod data;
 pub use data::{EntryType, FileEntry};
 pub mod cache;
+mod memory;
 pub mod metrics;
 pub mod output;
 pub mod thread_pool;
@@ -52,7 +53,7 @@ fn setup_thread_pool(args: &Args) -> Result<()> {
     // as we'll use local thread pools in the scan module instead
     if args.threads.is_some() {
         println!(
-            "🔧 Using local thread pool with {} threads",
+            "Using local thread pool with {} threads",
             args.threads.unwrap()
         );
         return Ok(());
@@ -181,14 +182,38 @@ fn main() -> Result<()> {
         None
     };
 
-    setup_thread_pool(&args)?;
+    // Apply conservative thread settings if memory limit is specified
+    let mut modified_args = args.clone();
+    if args.memory_limit.is_some() && args.threads.is_none() {
+        // Use at most 2 threads in HPC mode to reduce memory pressure
+        modified_args.threads = Some(std::cmp::min(2, num_cpus::get()));
+        println!(
+            "🧵 HPC mode: Using {} threads to minimize memory usage",
+            modified_args.threads.unwrap()
+        );
+    }
 
-    let expanded_patterns = expand_exclude_patterns(&args.exclude);
+    setup_thread_pool(&modified_args)?;
+
+    let expanded_patterns = expand_exclude_patterns(&modified_args.exclude);
     let exclude_matcher = build_exclude_matcher(&expanded_patterns)?;
 
     if let (Some(ref mut prof), Some(timer)) = (profile.as_mut(), setup_timer) {
         prof.add_phase(timer.finish());
     }
+
+    // Create memory monitor if memory limit is specified
+    let memory_monitor = if let Some(memory_limit_mb) = modified_args.memory_limit {
+        println!("🔍 Memory limit set to {} MB", memory_limit_mb);
+        println!("⚠️  HPC mode: Using conservative settings for resource-constrained environments");
+        let monitor = memory::MemoryMonitor::new_with_interval(
+            memory_limit_mb,
+            modified_args.memory_check_interval_ms,
+        );
+        Some(std::sync::Arc::new(std::sync::Mutex::new(monitor)))
+    } else {
+        None
+    };
 
     // Time the scanning phase
     let scan_timer = if args.profile {
@@ -197,7 +222,25 @@ fn main() -> Result<()> {
         None
     };
 
-    let scan_result = scan_files_and_dirs(root, &args, &exclude_matcher, args.sort)?;
+    let scan_result = if memory_monitor.is_some() {
+        scan::scan_files_and_dirs_with_memory_monitor(
+            root,
+            &modified_args,
+            &exclude_matcher,
+            modified_args.sort,
+            memory_monitor,
+        )?
+    } else {
+        scan_files_and_dirs(root, &modified_args, &exclude_matcher, modified_args.sort)?
+    };
+
+    // Check if memory limit was hit during scanning
+    if scan_result.memory_limit_hit {
+        eprintln!(
+            "⚠️  Memory limit reached ({} MB). Showing partial results.",
+            modified_args.memory_limit.unwrap()
+        );
+    }
 
     if let (Some(ref mut prof), Some(timer)) = (profile.as_mut(), scan_timer) {
         let total_scan_time = timer.finish();

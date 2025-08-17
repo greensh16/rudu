@@ -27,6 +27,8 @@ fn test_csv_rendering() {
         no_cache: false,
         cache_ttl: 604800,
         profile: false,
+        memory_limit: None,
+        memory_check_interval_ms: 200,
     };
 
     let result = csv::render(&entries, &args);
@@ -57,6 +59,8 @@ fn test_terminal_rendering() {
         no_cache: false,
         cache_ttl: 604800,
         profile: false,
+        memory_limit: None,
+        memory_check_interval_ms: 200,
     };
 
     let result = terminal::render(&entries, &args);

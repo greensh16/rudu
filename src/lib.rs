@@ -22,6 +22,7 @@
 pub mod cache;
 pub mod cli;
 pub mod data;
+pub mod memory;
 pub mod metrics;
 pub mod output;
 pub mod scan;

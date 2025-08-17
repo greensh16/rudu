@@ -10,12 +10,13 @@
 
 **`rudu`** is a high-performance, Rust-powered replacement for the traditional Unix `du` (disk usage) command. It was built to provide a safer, faster, and more extensible alternative for scanning and analyzing directory sizes — especially for large-scale or deep filesystem structures.
 
-While `du` has been a reliable tool for decades, it's single-threaded, limited in extensibility, and not always ideal for custom workflows or integration with modern systems. `rudu` takes advantage of Rust’s memory safety and concurrency to provide a tool that is:
+While `du` has been a reliable tool for decades, it's single-threaded, limited in extensibility, and not always ideal for custom workflows or integration with modern systems. `rudu` takes advantage of Rust's memory safety and concurrency to provide a tool that is:
 
 - **Fast** — uses multithreading (`rayon`) to speed up directory traversal and size aggregation.
 - **Safe** — memory-safe by design, no segfaults or undefined behavior.
 - **Extensible** — easy to add new flags, filters, and output formats as the tool grows.
 - **Accurate** — by default, `rudu` reports true disk usage (allocated blocks), not just file sizes.
+- **Memory-aware** — configurable memory limits for resource-constrained environments.
 
 ---
 
@@ -26,7 +27,15 @@ While `du` has been a reliable tool for decades, it's single-threaded, limited i
 - ✅ **Parallelized file traversal** - Uses multithreading (`rayon`) for faster scanning of large directories
 - ✅ **Real disk usage calculation** - Reports actual disk usage via `st_blocks * 512`, just like `du`
 - ✅ **Cross-platform compatibility** - Works on Unix-like systems (macOS, Linux, BSD)
+- ✅ **Platform-specific memory monitoring** - Reliable RSS tracking on Linux/macOS; best-effort on Windows
 - ✅ **Memory safety** - Built with Rust for zero segfaults and memory leaks
+
+### Memory Management (New in v1.4.0)
+- ✅ **Memory usage limits** (`--memory-limit MB`) - Set maximum memory usage in megabytes
+- ✅ **Graceful memory handling** - Automatically disables memory-intensive features when approaching limit
+- ✅ **Early termination** - Stops scan when memory limit is exceeded to prevent system issues
+- ✅ **Platform-aware monitoring** - Bypasses limits gracefully on platforms without RSS support
+- ✅ **HPC cluster support** - Designed for resource-constrained computing environments
 
 ### Filtering and Display Options
 - ✅ **Directory depth filtering** (`--depth N`) - Limit output to directories up to N levels deep
@@ -71,6 +80,21 @@ rudu /data
 rudu /large/directory
 ```
 
+### Memory-Limited Scanning (New in v1.4.0)
+```bash
+# Limit memory usage to 512MB (useful for HPC clusters)
+rudu /large/dataset --memory-limit 512
+
+# Very memory-constrained environment (128MB limit)
+rudu /project --memory-limit 128 --no-cache
+
+# Combine memory limits with other options
+rudu /data --memory-limit 256 --depth 3 --threads 2
+
+# Profile memory usage during scan
+rudu /large/directory --memory-limit 1024 --profile
+```
+
 ### Filtering and Depth Control
 ```bash
 # Show only top-level directories (depth = 1)
@@ -82,6 +106,8 @@ rudu /project --exclude .git --exclude node_modules --exclude target
 # Hide individual files in output
 rudu /data --show-files=false
 ```
+
+> 📖 **For comprehensive exclusion examples**: See the [complete `--exclude` tutorial](docs/exclude_tutorial.md) with real-world patterns, troubleshooting, and best practices.
 
 ### Sorting and Analysis
 ```bash
@@ -141,6 +167,90 @@ rudu /project --profile --threads 8 --depth 2
 
 ---
 
+## Memory Limiting for HPC Clusters
+
+**New in v1.4.0:** `rudu` now supports memory usage limits, making it suitable for use in High-Performance Computing (HPC) environments where memory resources are strictly controlled.
+
+### Why Memory Limiting?
+
+In HPC clusters, jobs are typically allocated specific amounts of memory, and exceeding these limits can result in:
+- Job termination by the scheduler (SLURM, PBS, etc.)
+- Node instability affecting other users
+- Poor cluster performance due to memory pressure
+
+Traditional tools like `du` don't provide memory usage controls, making them risky for large-scale filesystem analysis in shared computing environments.
+
+### How It Works
+
+`rudu`'s memory limiting system:
+
+1. **Real-time monitoring**: Continuously tracks RSS (Resident Set Size) memory usage
+2. **Graceful degradation**: When approaching 95% of limit, disables memory-intensive features like caching
+3. **Early termination**: If memory limit is exceeded, stops scanning and returns partial results
+4. **Platform awareness**: Automatically disables monitoring on platforms without RSS support
+
+### Usage Examples
+
+```bash
+# Basic memory-limited scan (512MB limit)
+rudu /shared/datasets --memory-limit 512
+
+# HPC job with strict memory constraints
+#!/bin/bash
+#SBATCH --mem=1G
+#SBATCH --job-name=rudu-scan
+rudu /lustre/project --memory-limit 900 --no-cache --threads 4
+
+# Memory-conscious deep scan with profiling
+rudu /large/filesystem --memory-limit 256 --depth 5 --profile
+
+# Combine with other resource controls
+rudu /data --memory-limit 128 --threads 1 --no-cache
+```
+
+### Memory Monitoring Behavior
+
+| Memory Usage | Behavior |
+|--------------|----------|
+| < 95% limit  | Normal operation with all features enabled |
+| 95-100% limit | Disables caching, reduces memory allocations |
+| > 100% limit | Terminates scan early, returns partial results |
+| Platform unsupported | Disables monitoring, continues normally |
+
+### Platform Support
+
+- **Linux/macOS**: Full memory monitoring with accurate RSS tracking
+- **FreeBSD/NetBSD/OpenBSD**: Full support using system-specific APIs
+- **Windows**: Best-effort support (may not be available on all versions)
+- **Other platforms**: Memory limiting is disabled, but scan continues normally
+
+### Best Practices for HPC
+
+1. **Set conservative limits**: Use 80-90% of allocated job memory
+   ```bash
+   # For a 2GB job allocation
+   rudu /data --memory-limit 1800
+   ```
+
+2. **Disable caching for one-time scans**: Saves memory in constrained environments
+   ```bash
+   rudu /data --memory-limit 512 --no-cache
+   ```
+
+3. **Use fewer threads in memory-constrained jobs**: Reduces per-thread memory overhead
+   ```bash
+   rudu /data --memory-limit 256 --threads 2
+   ```
+
+4. **Enable profiling to understand memory patterns**:
+   ```bash
+   rudu /data --memory-limit 1024 --profile
+   ```
+
+5. **Test with smaller datasets first** to understand memory requirements
+
+---
+
 ## Benchmark Results
 
 Performance comparison between `rudu` and traditional `du` on macOS:
@@ -158,6 +268,7 @@ Performance comparison between `rudu` and traditional `du` on macOS:
 - **Memory Safety**: No risk of segfaults or memory leaks
 - **Scalability**: Performance improves significantly with larger directory trees
 - **Thread Control**: Adjustable thread count for optimal performance
+- **Memory Awareness**: Configurable limits prevent resource exhaustion
 
 ### When to Use `rudu` vs `du`
 - **Use `rudu` for**:
@@ -168,6 +279,8 @@ Performance comparison between `rudu` and traditional `du` on macOS:
   - Integration with modern toolchains
   - Repeated scans (caching benefits)
   - Performance analysis and optimization
+  - **HPC clusters and memory-constrained environments**
+  - **Jobs with strict resource limits**
 
 - **Use `du` for**:
   - Very small directories (<1,000 files)
@@ -178,6 +291,10 @@ Performance comparison between `rudu` and traditional `du` on macOS:
 ### Performance Documentation
 
 For detailed performance analysis, optimization strategies, and benchmarking results, see the [Performance Guide](docs/performance.md).
+
+### Platform Support
+
+For platform-specific behavior, memory monitoring limitations, and RSS tracking details, see the [Platform Support Guide](docs/PLATFORM_SUPPORT.md).
 
 ---
 
@@ -218,6 +335,7 @@ cargo install rudu
 - **Cloud integration**: Direct analysis of cloud storage
 - **Watch mode**: Real-time monitoring of directory changes
 - **Compression analysis**: Identify highly compressible files
+- **Advanced memory management**: NUMA-aware allocation strategies
 
 ---
 
@@ -265,3 +383,4 @@ This project is licensed under the GNU GENERAL PUBLIC LICENSE - see the [LICENSE
 - Uses [Rayon](https://github.com/rayon-rs/rayon) for parallel processing
 - Command-line interface powered by [Clap](https://github.com/clap-rs/clap)
 - Progress indicators via [Indicatif](https://github.com/console-rs/indicatif)
+- Memory monitoring via [sysinfo](https://github.com/GuillaumeGomez/sysinfo) crate

@@ -19,11 +19,36 @@ use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 // Thread-safe file lock for atomic cache operations
 static FILE_LOCK: Lazy<parking_lot::Mutex<()>> = Lazy::new(|| parking_lot::Mutex::new(()));
 
+// Global cache enabled flag - can be disabled dynamically when nearing memory limits
+static CACHE_ENABLED: AtomicBool = AtomicBool::new(true);
+
 pub use model::{CacheEntry, CacheHeader};
+
+/// Enable or disable caching dynamically
+///
+/// This function can be called to enable or disable cache operations at runtime,
+/// typically used when memory usage is nearing limits to reduce memory consumption.
+///
+/// # Arguments
+/// * `enabled` - True to enable caching, false to disable
+pub fn set_enabled(enabled: bool) {
+    CACHE_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+/// Check if caching is currently enabled
+///
+/// Returns the current state of the cache enable flag.
+///
+/// # Returns
+/// * `bool` - True if caching is enabled, false otherwise
+pub fn is_enabled() -> bool {
+    CACHE_ENABLED.load(Ordering::Relaxed)
+}
 
 /// Get the cache root directory
 ///
@@ -58,6 +83,11 @@ pub fn cache_root() -> PathBuf {
 /// # Returns
 /// * `HashMap<PathBuf, CacheEntry>` - The loaded cache entries, or empty cache if not found
 pub fn load_cache(root: &Path, ttl_seconds: u64) -> HashMap<PathBuf, CacheEntry> {
+    // Check if caching is disabled dynamically
+    if !is_enabled() {
+        return HashMap::new();
+    }
+
     let cache_path = match model::Cache::get_cache_path_without_write_test(root) {
         Ok(path) => path,
         Err(_) => {
@@ -65,13 +95,12 @@ pub fn load_cache(root: &Path, ttl_seconds: u64) -> HashMap<PathBuf, CacheEntry>
         }
     };
 
-
     // Check if cache file exists
     if !cache_path.exists() {
         return HashMap::new();
     }
 
-match load_cache_from_file(&cache_path) {
+    match load_cache_from_file(&cache_path) {
         Ok(cache) => {
             // Check if cache should be invalidated
             if cache.header.should_invalidate(root, ttl_seconds) {
@@ -84,7 +113,9 @@ match load_cache_from_file(&cache_path) {
             }
             // Convert from hash-based entries back to path-based entries
             let path_entries: HashMap<PathBuf, CacheEntry> = cache
-                .entries.into_values().map(|entry| (entry.path.clone(), entry))
+                .entries
+                .into_values()
+                .map(|entry| (entry.path.clone(), entry))
                 .collect();
             path_entries
         }
@@ -124,7 +155,7 @@ pub fn save_cache(root: &Path, cache: &HashMap<PathBuf, CacheEntry>) -> Result<(
 pub fn invalidate_cache(root: &Path) -> Result<bool> {
     let cache_path = model::Cache::get_cache_path_without_write_test(root)
         .context("Failed to determine cache file path")?;
-    
+
     if cache_path.exists() {
         std::fs::remove_file(&cache_path)
             .with_context(|| format!("Failed to remove cache file: {}", cache_path.display()))?;
@@ -151,6 +182,11 @@ pub fn save_cache_with_mtime(
     cache: &HashMap<PathBuf, CacheEntry>,
     root_mtime: Option<u64>,
 ) -> Result<()> {
+    // Check if caching is disabled dynamically
+    if !is_enabled() {
+        return Ok(()); // Silently skip cache saving when disabled
+    }
+
     let cache_path = model::Cache::get_cache_path_without_write_test(root)
         .context("Failed to determine cache file path")?;
 
@@ -182,7 +218,7 @@ pub fn save_cache_with_mtime(
 fn load_cache_from_file(path: &Path) -> Result<model::Cache> {
     // Lock file access to prevent concurrent reads/writes
     let _g = FILE_LOCK.lock();
-    
+
     let file = File::open(path)
         .with_context(|| format!("Failed to open cache file: {}", path.display()))?;
 
@@ -190,7 +226,6 @@ fn load_cache_from_file(path: &Path) -> Result<model::Cache> {
         .metadata()
         .with_context(|| format!("Failed to get file metadata: {}", path.display()))?
         .len();
-
 
     if file_len == 0 {
         return Err(anyhow!("Cache file is empty"));
@@ -231,23 +266,32 @@ fn load_cache_from_file(path: &Path) -> Result<model::Cache> {
 fn save_cache_to_file(path: &Path, cache: &model::Cache) -> Result<()> {
     // Lock file access to prevent concurrent reads/writes
     let _g = FILE_LOCK.lock();
-    
+
     // First serialize to get the size
     let serialized_data = bincode::serialize(cache).context("Failed to serialize cache data")?;
 
     // Create temporary file path
     let temp_path = path.with_extension("tmp");
-    
+
     // Try memory-mapped IO first, fall back to regular file IO if it fails
     if try_save_with_mmap(&temp_path, &serialized_data).is_err() {
         // Fallback to regular file IO
-        save_with_regular_io(&temp_path, &serialized_data)
-            .with_context(|| format!("Failed to save cache to temporary file: {}", temp_path.display()))?;
+        save_with_regular_io(&temp_path, &serialized_data).with_context(|| {
+            format!(
+                "Failed to save cache to temporary file: {}",
+                temp_path.display()
+            )
+        })?;
     }
 
     // Atomically move the temporary file to the final location
-    std::fs::rename(&temp_path, path)
-        .with_context(|| format!("Failed to atomically move cache file from {} to {}", temp_path.display(), path.display()))?;
+    std::fs::rename(&temp_path, path).with_context(|| {
+        format!(
+            "Failed to atomically move cache file from {} to {}",
+            temp_path.display(),
+            path.display()
+        )
+    })?;
 
     Ok(())
 }
@@ -329,43 +373,49 @@ mod cache_root_tests {
 
     #[test]
     fn test_cache_root_with_rudu_cache_dir() {
+        let _lock = crate::cache::tests::CACHE_TEST_LOCK.lock().unwrap();
         let temp_dir = TempDir::new().unwrap();
         let custom_cache_path = temp_dir.path().to_string_lossy().to_string();
-        
+
         // Set RUDU_CACHE_DIR environment variable
         env::set_var("RUDU_CACHE_DIR", &custom_cache_path);
-        
+
         // Test that cache_root() uses the custom directory
         let cache_root_result = cache_root();
         assert_eq!(cache_root_result, PathBuf::from(&custom_cache_path));
-        
+
         // Clean up
         env::remove_var("RUDU_CACHE_DIR");
     }
-    
+
     #[test]
     fn test_cache_root_fallback_to_xdg() {
+        let _lock = crate::cache::tests::CACHE_TEST_LOCK.lock().unwrap();
         // Ensure RUDU_CACHE_DIR is not set
         env::remove_var("RUDU_CACHE_DIR");
-        
+
         // Test that cache_root() falls back to XDG logic
         let cache_root_result = cache_root();
-        
+
         // Should not be empty and should contain some sensible path
         assert!(!cache_root_result.to_string_lossy().is_empty());
-        
+
         // Should be different from a custom path
         assert_ne!(cache_root_result, PathBuf::from("/tmp/custom-rudu-cache"));
     }
-    
+
     #[test]
     fn test_cache_operations_use_configurable_directory() {
+        let _lock = crate::cache::tests::CACHE_TEST_LOCK.lock().unwrap();
         let temp_dir = TempDir::new().unwrap();
         let custom_cache_path = temp_dir.path().to_string_lossy().to_string();
-        
+
         // Set RUDU_CACHE_DIR environment variable
         env::set_var("RUDU_CACHE_DIR", &custom_cache_path);
-        
+
+        // Ensure caching is enabled for the test
+        set_enabled(true);
+
         // Create test cache
         let root_path = PathBuf::from(".");
         let mut cache = HashMap::new();
@@ -380,22 +430,65 @@ mod cache_root_tests {
             crate::data::EntryType::File,
         );
         cache.insert(PathBuf::from("test.txt"), entry);
-        
+
         // Save cache (should use custom directory)
         let save_result = save_cache(&root_path, &cache);
         assert!(save_result.is_ok());
-        
+
         // Load cache (should load from custom directory)
         let loaded_cache = load_cache(&root_path, 604800);
         assert_eq!(loaded_cache.len(), 1);
         assert!(loaded_cache.contains_key(&PathBuf::from("test.txt")));
-        
+
         // Test invalidation
         let was_invalidated = invalidate_cache(&root_path);
         assert!(was_invalidated.is_ok());
         assert!(was_invalidated.unwrap());
-        
+
         // Clean up
         env::remove_var("RUDU_CACHE_DIR");
+    }
+
+    #[test]
+    fn test_dynamic_cache_enabling_disabling() {
+        // Store initial state to restore it at the end
+        let initial_state = is_enabled();
+
+        // Test initial state (should normally be enabled)
+        set_enabled(true); // Ensure we start enabled
+        assert!(is_enabled());
+
+        // Test disabling
+        set_enabled(false);
+        assert!(!is_enabled());
+
+        // Test that load_cache returns empty when disabled
+        let root_path = PathBuf::from(".");
+        let cache = load_cache(&root_path, 604800);
+        assert!(cache.is_empty());
+
+        // Test that save_cache succeeds silently when disabled
+        let mut test_cache = HashMap::new();
+        let entry = CacheEntry::new(
+            12345,
+            PathBuf::from("test.txt"),
+            1024,
+            1234567890,
+            1,
+            Some(1),
+            Some(1000),
+            crate::data::EntryType::File,
+        );
+        test_cache.insert(PathBuf::from("test.txt"), entry);
+
+        let save_result = save_cache_with_mtime(&root_path, &test_cache, None);
+        assert!(save_result.is_ok());
+
+        // Re-enable caching
+        set_enabled(true);
+        assert!(is_enabled());
+
+        // Restore original state for other tests
+        set_enabled(initial_state);
     }
 }

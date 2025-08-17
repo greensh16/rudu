@@ -138,6 +138,8 @@ fn benchmark_scan_small_directory(c: &mut Criterion) {
         no_cache: false,
         cache_ttl: 604800, // 7 days
         profile: false,
+        memory_limit: None,
+        memory_check_interval_ms: 200,
     };
 
     let exclude_matcher = build_exclude_matcher(&[]).unwrap();
@@ -176,6 +178,8 @@ fn benchmark_scan_deep_directory(c: &mut Criterion) {
         no_cache: false,
         cache_ttl: 604800, // 7 days
         profile: false,
+        memory_limit: None,
+        memory_check_interval_ms: 200,
     };
 
     let exclude_matcher = build_exclude_matcher(&[]).unwrap();
@@ -214,6 +218,8 @@ fn benchmark_scan_with_owner_info(c: &mut Criterion) {
         no_cache: false,
         cache_ttl: 604800, // 7 days
         profile: false,
+        memory_limit: None,
+        memory_check_interval_ms: 200,
     };
 
     let exclude_matcher = build_exclude_matcher(&[]).unwrap();
@@ -253,6 +259,8 @@ fn benchmark_scan_with_cache_hit(c: &mut Criterion) {
         no_cache: false,
         cache_ttl: 604800, // 7 days
         profile: false,
+        memory_limit: None,
+        memory_check_interval_ms: 200,
     };
 
     // Create and populate cache
@@ -295,6 +303,8 @@ fn benchmark_scan_with_cache_miss(c: &mut Criterion) {
         no_cache: false,
         cache_ttl: 604800, // 7 days
         profile: false,
+        memory_limit: None,
+        memory_check_interval_ms: 200,
     };
 
     // Create and populate cache
@@ -344,6 +354,8 @@ fn benchmark_scan_incremental_deep(c: &mut Criterion) {
         no_cache: false,
         cache_ttl: 604800, // 7 days
         profile: false,
+        memory_limit: None,
+        memory_check_interval_ms: 200,
     };
 
     // Create and populate cache

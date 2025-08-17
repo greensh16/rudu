@@ -24,3 +24,13 @@ jobs:
         override: true
     - name: Build
       run: cargo build --verbose
+    - name: Run tests
+      run: cargo test --verbose
+    - name: Run integration tests
+      run: cargo test --test integration_tests --verbose
+    - name: Run memory monitoring tests
+      run: cargo test test_memory_monitor_with_mock_usage --verbose
+    - name: Run clippy
+      run: cargo clippy -- -D warnings
+    - name: Check formatting
+      run: cargo fmt --check

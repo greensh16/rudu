@@ -26,8 +26,8 @@ use std::path::PathBuf;
 /// This struct defines all available command-line options and flags
 /// for controlling the behavior of the file system scan and output formatting.
 /// ```
-#[derive(Parser, Debug)]
-#[command(name = "rudu", author = "Sam Green", version = "1.3.0", about)]
+#[derive(Parser, Debug, Clone)]
+#[command(name = "rudu", author = "Sam Green", version = "1.4.0", about)]
 pub struct Args {
     /// Path to scan (defaults to current directory)
     #[arg(default_value = ".")]
@@ -80,6 +80,19 @@ pub struct Args {
     /// Enable performance profiling and show timing summary
     #[arg(long, default_value_t = false)]
     pub profile: bool,
+
+    /// Set memory usage limit in megabytes (MB)
+    #[arg(long, value_name = "MB")]
+    pub memory_limit: Option<u64>,
+
+    /// Memory check interval in milliseconds for memory monitoring (hidden experimental flag)
+    #[arg(
+        long = "memory-check-interval-ms",
+        value_name = "MS",
+        default_value_t = 200,
+        hide = true
+    )]
+    pub memory_check_interval_ms: u64,
 }
 
 /// Enum for specifying how to sort scan results.
@@ -110,4 +123,80 @@ pub struct CsvEntry {
     pub owner: Option<String>,
     pub path: String,
     pub inodes: Option<u64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn test_memory_limit_parsing() {
+        // Test with memory limit specified
+        let args = Args::try_parse_from(["rudu", "--memory-limit", "512"]).unwrap();
+        assert_eq!(args.memory_limit, Some(512));
+
+        // Test without memory limit (should be None)
+        let args = Args::try_parse_from(["rudu"]).unwrap();
+        assert_eq!(args.memory_limit, None);
+
+        // Test with invalid memory limit (should fail)
+        let result = Args::try_parse_from(["rudu", "--memory-limit", "invalid"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_default_values() {
+        let args = Args::try_parse_from(["rudu"]).unwrap();
+
+        assert_eq!(args.path, PathBuf::from("."));
+        assert_eq!(args.depth, None);
+        assert_eq!(args.sort, SortKey::Name);
+        assert_eq!(args.show_files, true);
+        assert_eq!(args.exclude, Vec::<String>::new());
+        assert_eq!(args.show_owner, false);
+        assert_eq!(args.output, None);
+        assert_eq!(args.threads, None);
+        assert_eq!(args.show_inodes, false);
+        assert_eq!(args.no_cache, false);
+        assert_eq!(args.cache_ttl, 604800);
+        assert_eq!(args.profile, false);
+        assert_eq!(args.memory_limit, None);
+        assert_eq!(args.memory_check_interval_ms, 200);
+    }
+
+    #[test]
+    fn test_memory_limit_with_other_args() {
+        let args = Args::try_parse_from([
+            "rudu",
+            "--memory-limit",
+            "1024",
+            "--depth",
+            "3",
+            "--threads",
+            "4",
+            "/some/path",
+        ])
+        .unwrap();
+
+        assert_eq!(args.memory_limit, Some(1024));
+        assert_eq!(args.depth, Some(3));
+        assert_eq!(args.threads, Some(4));
+        assert_eq!(args.path, PathBuf::from("/some/path"));
+    }
+
+    #[test]
+    fn test_memory_check_interval_parsing() {
+        // Test with custom memory check interval
+        let args = Args::try_parse_from(["rudu", "--memory-check-interval-ms", "500"]).unwrap();
+        assert_eq!(args.memory_check_interval_ms, 500);
+
+        // Test default value
+        let args = Args::try_parse_from(["rudu"]).unwrap();
+        assert_eq!(args.memory_check_interval_ms, 200);
+
+        // Test with invalid value (should fail)
+        let result = Args::try_parse_from(["rudu", "--memory-check-interval-ms", "invalid"]);
+        assert!(result.is_err());
+    }
 }

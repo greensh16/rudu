@@ -13,15 +13,15 @@ use crate::cli::SortKey;
 use crate::data::{EntryType, FileEntry};
 use anyhow::{Context, Result};
 use globset::{Glob, GlobSet, GlobSetBuilder};
-use libc::{getpwuid_r, stat as libc_stat, stat, passwd, c_char};
-use std::mem::MaybeUninit;
-use std::sync::Mutex;
-use std::collections::{HashMap, hash_map::DefaultHasher};
+use libc::{c_char, getpwuid_r, passwd, stat as libc_stat, stat};
+use std::collections::{hash_map::DefaultHasher, HashMap};
 use std::hash::{Hash, Hasher};
+use std::mem::MaybeUninit;
 use std::os::unix::ffi::OsStrExt;
-use std::{ffi::CStr, ffi::CString, path::Path};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+use std::{ffi::CStr, ffi::CString, path::Path};
 
 /// Returns the actual disk usage (in bytes) of a file or directory.
 ///
@@ -42,11 +42,11 @@ pub fn disk_usage(path: &Path) -> u64 {
     // Use MaybeUninit to avoid undefined behavior with zeroed stat struct
     let mut stat_buf = std::mem::MaybeUninit::<stat>::uninit();
     let result = unsafe { libc_stat(c_path.as_ptr(), stat_buf.as_mut_ptr()) };
-    
+
     if result != 0 {
         return 0;
     }
-    
+
     let stat_buf = unsafe { stat_buf.assume_init() };
     (stat_buf.st_blocks as u64) * 512
 }
@@ -96,9 +96,8 @@ pub fn sort_entries(entries: &mut [FileEntry], sort_key: SortKey) {
 }
 
 // Global cache for UID to username mapping to avoid repeated segfaults
-static UID_CACHE: std::sync::LazyLock<Mutex<HashMap<u32, String>>> = std::sync::LazyLock::new(|| {
-    Mutex::new(HashMap::new())
-});
+static UID_CACHE: std::sync::LazyLock<Mutex<HashMap<u32, String>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
 // Flag to track if we've encountered getpwuid issues
 static GETPWUID_BROKEN: AtomicBool = AtomicBool::new(false);
@@ -111,17 +110,17 @@ fn resolve_uid_with_getent(uid: u32) -> Option<String> {
         .arg(uid.to_string())
         .output()
         .ok()?;
-    
+
     if !output.status.success() {
         return None;
     }
-    
+
     let output_str = String::from_utf8(output.stdout).ok()?;
     let line = output_str.trim();
-    
+
     // Parse passwd format: username:password:uid:gid:gecos:home:shell
     let parts: Vec<&str> = line.split(':').collect();
-    if parts.len() >= 1 {
+    if !parts.is_empty() {
         Some(parts[0].to_string())
     } else {
         None
@@ -132,7 +131,7 @@ fn resolve_uid_with_getent(uid: u32) -> Option<String> {
 ///
 /// Uses `libc::getpwuid` to resolve user ID to a username. If the username
 /// cannot be resolved, returns the numeric UID as a string.
-/// 
+///
 /// This function implements several safety measures:
 /// - Thread-safe caching to avoid repeated calls for the same UID
 /// - Panic handling to prevent segfaults
@@ -145,37 +144,37 @@ fn resolve_uid_with_getent(uid: u32) -> Option<String> {
 /// * `Option<String>` - The username or UID, or None if the path cannot be accessed
 pub fn get_owner(path: &Path) -> Option<String> {
     let c_path = CString::new(path.as_os_str().as_bytes()).ok()?;
-    
+
     // Use MaybeUninit to avoid undefined behavior with zeroed stat struct
     let mut stat_buf = std::mem::MaybeUninit::<stat>::uninit();
     let result = unsafe { libc_stat(c_path.as_ptr(), stat_buf.as_mut_ptr()) };
-    
+
     if result != 0 {
         return None;
     }
-    
+
     let stat_buf = unsafe { stat_buf.assume_init() };
     let uid = stat_buf.st_uid;
-    
+
     // Check if getpwuid is known to be broken
     if GETPWUID_BROKEN.load(Ordering::Relaxed) {
         return Some(uid.to_string());
     }
-    
+
     // Try to get from cache first
     if let Ok(cache) = UID_CACHE.lock() {
         if let Some(cached_name) = cache.get(&uid) {
             return Some(cached_name.clone());
         }
     }
-    
+
     // Try to resolve the UID to a username using thread-safe getpwuid_r
     let resolved_name = match std::panic::catch_unwind(|| {
         // Use thread-safe getpwuid_r instead of getpwuid
         let mut pwd = MaybeUninit::<passwd>::uninit();
         let mut buf = [0u8; 4096]; // Buffer for getpwuid_r
         let mut result: *mut passwd = std::ptr::null_mut();
-        
+
         let ret = unsafe {
             getpwuid_r(
                 uid,
@@ -185,19 +184,19 @@ pub fn get_owner(path: &Path) -> Option<String> {
                 &mut result,
             )
         };
-        
+
         // Check if getpwuid_r succeeded
         if ret != 0 || result.is_null() {
             return None;
         }
-        
+
         // Safe to dereference result now
         unsafe {
             let pw_name = (*result).pw_name;
             if pw_name.is_null() {
                 return None;
             }
-            
+
             // Try to create a CStr from the pointer
             let name = CStr::from_ptr(pw_name);
             name.to_str().ok().map(String::from)
@@ -220,7 +219,7 @@ pub fn get_owner(path: &Path) -> Option<String> {
                 });
                 uid.to_string()
             }
-        },
+        }
         Err(_) => {
             // Panic occurred - mark getpwuid as broken and fallback to UID strings
             GETPWUID_BROKEN.store(true, Ordering::Relaxed);
@@ -228,12 +227,12 @@ pub fn get_owner(path: &Path) -> Option<String> {
             uid.to_string()
         }
     };
-    
+
     // Cache the result
     if let Ok(mut cache) = UID_CACHE.lock() {
         cache.insert(uid, resolved_name.clone());
     }
-    
+
     Some(resolved_name)
 }
 
@@ -283,15 +282,15 @@ pub struct DirMetadata {
 /// Get directory metadata (mtime, nlink, size, owner) for caching
 pub fn get_dir_metadata(path: &Path) -> Option<DirMetadata> {
     let c_path = CString::new(path.as_os_str().as_bytes()).ok()?;
-    
+
     // Use MaybeUninit to avoid undefined behavior with zeroed stat struct
     let mut stat_buf = std::mem::MaybeUninit::<stat>::uninit();
     let result = unsafe { libc_stat(c_path.as_ptr(), stat_buf.as_mut_ptr()) };
-    
+
     if result != 0 {
         return None;
     }
-    
+
     let stat_buf = unsafe { stat_buf.assume_init() };
     Some(DirMetadata {
         mtime: stat_buf.st_mtime as u64,

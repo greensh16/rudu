@@ -1,8 +1,10 @@
 use rudu::cli::{Args, SortKey};
-use rudu::scan::scan_files_and_dirs;
+use rudu::memory::MemoryMonitor;
+use rudu::scan::{scan_files_and_dirs, scan_files_and_dirs_with_memory_monitor};
 use rudu::thread_pool::ThreadPoolStrategy;
 use rudu::utils::{build_exclude_matcher, expand_exclude_patterns};
 use std::fs;
+use std::sync::{Arc, Mutex};
 use tempfile::TempDir;
 
 #[test]
@@ -52,6 +54,8 @@ fn test_inode_counting_with_tempdir() {
         no_cache: false,
         cache_ttl: 604800,
         profile: false,
+        memory_limit: None,
+        memory_check_interval_ms: 200,
     };
 
     let exclude_patterns = expand_exclude_patterns(&args.exclude);
@@ -151,6 +155,8 @@ fn test_exclude_patterns_with_tempdir() {
         no_cache: false,
         cache_ttl: 604800,
         profile: false,
+        memory_limit: None,
+        memory_check_interval_ms: 200,
     };
 
     let exclude_patterns = expand_exclude_patterns(&args.exclude);
@@ -228,6 +234,8 @@ fn test_depth_filtering_with_tempdir() {
         no_cache: false,
         cache_ttl: 604800,
         profile: false,
+        memory_limit: None,
+        memory_check_interval_ms: 200,
     };
 
     let exclude_patterns = expand_exclude_patterns(&args.exclude);
@@ -289,6 +297,8 @@ fn test_size_calculation_with_tempdir() {
         no_cache: false,
         cache_ttl: 604800,
         profile: false,
+        memory_limit: None,
+        memory_check_interval_ms: 200,
     };
 
     let exclude_patterns = expand_exclude_patterns(&args.exclude);
@@ -320,4 +330,101 @@ fn test_size_calculation_with_tempdir() {
         .unwrap();
 
     assert!(file2_entry.size > file1_entry.size);
+}
+
+#[test]
+fn test_memory_limit_with_small_temp_dir() {
+    // Create a small temporary directory structure
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let root_path = temp_dir.path();
+
+    // Create test directory structure with just a few files
+    // temp/
+    // ├── dir1/
+    // │   └── file1.txt
+    // └── file2.txt
+
+    let dir1 = root_path.join("dir1");
+    fs::create_dir(&dir1).expect("Failed to create dir1");
+
+    // Create some small files
+    fs::write(dir1.join("file1.txt"), "small content 1").expect("Failed to write file1");
+    fs::write(root_path.join("file2.txt"), "small content 2").expect("Failed to write file2");
+
+    // Set up args for scanning with a very low memory limit (1 MB)
+    let args = Args {
+        path: root_path.to_path_buf(),
+        depth: None,
+        sort: SortKey::Name,
+        show_files: true,
+        exclude: vec![],
+        show_owner: false,
+        output: None,
+        threads: None,
+        show_inodes: false,
+        threads_strategy: ThreadPoolStrategy::Default,
+        no_cache: true, // Disable cache to simplify the test
+        cache_ttl: 604800,
+        profile: false,
+        memory_limit: Some(1),        // 1 MB limit - very low
+        memory_check_interval_ms: 50, // Check very frequently
+    };
+
+    let exclude_patterns = expand_exclude_patterns(&args.exclude);
+    let exclude_matcher =
+        build_exclude_matcher(&exclude_patterns).expect("Failed to build exclude matcher");
+
+    // Create a memory monitor with the specified limit
+    let memory_monitor = Arc::new(Mutex::new(MemoryMonitor::new(1))); // 1 MB limit
+
+    // Scan the directory with memory monitoring
+    let result = scan_files_and_dirs_with_memory_monitor(
+        root_path,
+        &args,
+        &exclude_matcher,
+        args.sort,
+        Some(memory_monitor.clone()),
+    );
+
+    // The scan should complete successfully
+    assert!(result.is_ok());
+    let scan_result = result.unwrap();
+
+    // For a small directory, we should have entries
+    assert!(!scan_result.entries.is_empty());
+
+    // Verify the memory status - it might be normal or nearing limit depending on actual memory usage
+    // The important thing is that it doesn't panic or fail
+    match scan_result.memory_status {
+        rudu::scan::MemoryLimitStatus::Normal => {
+            println!("✅ Memory usage stayed within normal limits");
+            assert!(!scan_result.memory_limit_hit);
+        }
+        rudu::scan::MemoryLimitStatus::NearingLimit => {
+            println!("⚠️  Memory usage approached the limit");
+            assert!(!scan_result.memory_limit_hit);
+        }
+        rudu::scan::MemoryLimitStatus::MemoryLimitHit => {
+            println!("🚫 Memory limit was hit and scan terminated early");
+            assert!(scan_result.memory_limit_hit);
+        }
+    }
+
+    // Verify we found the expected files
+    let file_names: Vec<_> = scan_result
+        .entries
+        .iter()
+        .filter(|e| e.entry_type == rudu::data::EntryType::File)
+        .map(|e| e.path.file_name().unwrap().to_str().unwrap())
+        .collect();
+
+    // We should find at least some files (unless memory limit hit very early)
+    if !scan_result.memory_limit_hit {
+        assert!(file_names.contains(&"file2.txt"));
+    }
+
+    println!(
+        "Memory limit test completed with {} files found",
+        file_names.len()
+    );
 }

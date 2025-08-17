@@ -3,3 +3,6 @@ Cargo.lock
 .vscode
 
 notes/
+.DS_Store
+dist/
+WARP.md

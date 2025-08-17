@@ -37,6 +37,8 @@ fn test_csv_renderer_works() {
         no_cache: false,
         cache_ttl: 604800,
         profile: false,
+        memory_limit: None,
+        memory_check_interval_ms: 200,
     };
 
     // Test that CSV rendering doesn't panic or error
@@ -77,6 +79,8 @@ fn test_terminal_renderer_works() {
         no_cache: false,
         cache_ttl: 604800,
         profile: false,
+        memory_limit: None,
+        memory_check_interval_ms: 200,
     };
 
     // Test that terminal rendering doesn't panic or error

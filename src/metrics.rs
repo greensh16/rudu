@@ -195,9 +195,24 @@ impl Default for ProfileData {
 /// memory usage. It's designed to be called after completing a phase
 /// to track peak memory usage.
 ///
+/// # Platform Support
+///
+/// - **Linux/macOS**: Reliable RSS values from `/proc/[pid]/status` or `task_info()`
+/// - **Windows**: Best-effort support; may have limited accuracy on some versions
+///
+/// When memory monitoring returns `None`, the monitor should bypass memory checks
+/// to avoid false positives or system instability.
+///
 /// # Returns
 /// The current RSS memory usage in bytes, or `None` if the information
-/// is not available on this platform.
+/// is not available on this platform or if an error occurs.
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd"
+))]
 pub fn rss_after_phase() -> Option<u64> {
     let mut system = System::new_all();
     system.refresh_processes();
@@ -208,10 +223,49 @@ pub fn rss_after_phase() -> Option<u64> {
     for (pid, process) in system.processes() {
         if pid.as_u32() == current_pid {
             // Convert from KB to bytes
+            // On Unix-like systems, sysinfo reliably reports RSS via system calls
             return Some(process.memory() * 1024);
         }
     }
 
+    None
+}
+
+/// Windows implementation of RSS measurement (best-effort)
+///
+/// On Windows, RSS reporting may be less reliable due to differences in
+/// memory management and system API behavior across Windows versions.
+#[cfg(target_os = "windows")]
+pub fn rss_after_phase() -> Option<u64> {
+    let mut system = System::new_all();
+    system.refresh_processes();
+
+    let current_pid = std::process::id();
+
+    // Find the current process
+    for (pid, process) in system.processes() {
+        if pid.as_u32() == current_pid {
+            // Convert from KB to bytes
+            // Note: Windows RSS reporting is best-effort and may vary by Windows version
+            return Some(process.memory() * 1024);
+        }
+    }
+
+    None
+}
+
+/// Fallback implementation for unsupported platforms
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd",
+    target_os = "windows"
+)))]
+pub fn rss_after_phase() -> Option<u64> {
+    // On unsupported platforms, return None to signal that memory monitoring
+    // should be bypassed entirely
     None
 }
 
@@ -321,7 +375,7 @@ pub fn save_stats_json(
 ///
 /// # Example
 /// ```rust
-/// use rudu::metrics::time_phase;
+/// use rudu::time_phase;
 ///
 /// let (result, timing) = time_phase!("Database Query", {
 ///     // ... some expensive operation ...
@@ -387,6 +441,97 @@ mod tests {
                 // Memory tracking might not be available on all platforms
                 println!("Memory tracking not available on this platform");
             }
+        }
+    }
+
+    /// Tests for platform-specific RSS behavior
+    mod platform_tests {
+        use super::*;
+
+        #[test]
+        #[cfg(any(
+            target_os = "linux",
+            target_os = "macos",
+            target_os = "freebsd",
+            target_os = "netbsd",
+            target_os = "openbsd"
+        ))]
+        fn test_unix_rss_should_return_some() {
+            // On Unix-like systems, RSS should generally be available
+            let memory = rss_after_phase();
+            // We expect Some(bytes) on Unix systems, but allow None for edge cases
+            // (like very restricted environments or system API failures)
+            match memory {
+                Some(bytes) => {
+                    assert!(bytes > 0, "RSS should be positive on Unix systems");
+                    println!("✅ Unix RSS tracking working: {} bytes", bytes);
+                }
+                None => {
+                    println!("⚠️  Unix RSS returned None - this may indicate a system issue");
+                    // Don't fail the test as some containerized environments might restrict access
+                }
+            }
+        }
+
+        #[test]
+        #[cfg(target_os = "windows")]
+        fn test_windows_rss_best_effort() {
+            // On Windows, RSS is best-effort and may return None
+            let memory = rss_after_phase();
+            match memory {
+                Some(bytes) => {
+                    assert!(
+                        bytes > 0,
+                        "RSS should be positive when available on Windows"
+                    );
+                    println!(
+                        "✅ Windows RSS tracking working: {} bytes (best-effort)",
+                        bytes
+                    );
+                }
+                None => {
+                    println!(
+                        "ℹ️  Windows RSS returned None - this is expected on some Windows versions"
+                    );
+                    // This is acceptable on Windows - it's best-effort
+                }
+            }
+        }
+
+        #[test]
+        #[cfg(not(any(
+            target_os = "linux",
+            target_os = "macos",
+            target_os = "freebsd",
+            target_os = "netbsd",
+            target_os = "openbsd",
+            target_os = "windows"
+        )))]
+        fn test_unsupported_platform_returns_none() {
+            // On unsupported platforms, RSS should always return None
+            let memory = rss_after_phase();
+            assert_eq!(
+                memory, None,
+                "Unsupported platforms should return None for RSS"
+            );
+            println!("✅ Unsupported platform correctly returns None for RSS");
+        }
+
+        #[test]
+        fn test_memory_monitor_handles_none_rss() {
+            // Test that the system handles None RSS values gracefully
+            // This simulates what happens on unsupported platforms or when RSS fails
+
+            // We can't directly test MemoryMonitor here since it's in a different module,
+            // but we can verify that None RSS values are handled properly in the metrics
+            let mut profile = ProfileData::new();
+            profile.memory_peak = None; // Simulates RSS returning None
+
+            // Should not panic and should handle None gracefully
+            let summary = format!("{:?}", profile);
+            assert!(summary.contains("memory_peak: None"));
+
+            println!("✅ ProfileData handles None memory_peak gracefully");
         }
     }
 

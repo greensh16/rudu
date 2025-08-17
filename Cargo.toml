@@ -1,6 +1,6 @@
 [package]
 name = "rudu"
-version = "1.3.0"
+version = "1.4.0"
 authors = ["Sam Green"]
 edition = "2021"
 repository = "https://github.com/greensh16/rudu"
@@ -60,4 +60,8 @@ harness = false
 
 [[bench]]
 name = "memory_benchmark"
+harness = false
+
+[[bench]]
+name = "overhead_benchmark"
 harness = false
