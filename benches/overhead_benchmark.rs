@@ -1,10 +1,10 @@
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use rudu::Args;
 use rudu::cli::SortKey;
 use rudu::memory::MemoryMonitor;
 use rudu::scan::{scan_files_and_dirs, scan_files_and_dirs_with_memory_monitor};
 use rudu::thread_pool::ThreadPoolStrategy;
 use rudu::utils::build_exclude_matcher;
-use rudu::Args;
 use std::fs;
 use std::path::Path;
 use std::sync::{Arc, Mutex};

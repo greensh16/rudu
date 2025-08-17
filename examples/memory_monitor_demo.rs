@@ -1,6 +1,6 @@
 use rudu::cli::{Args, SortKey};
 use rudu::memory::MemoryMonitor;
-use rudu::scan::{scan_files_and_dirs_with_memory_monitor, MemoryLimitStatus};
+use rudu::scan::{MemoryLimitStatus, scan_files_and_dirs_with_memory_monitor};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 

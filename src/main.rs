@@ -27,7 +27,7 @@
 use anyhow::Result;
 use clap::Parser;
 use csv::Writer;
-use humansize::{format_size, DECIMAL};
+use humansize::{DECIMAL, format_size};
 use std::fs::File;
 use std::path::Path;
 
@@ -44,8 +44,8 @@ mod memory;
 pub mod metrics;
 pub mod output;
 pub mod thread_pool;
-use metrics::{print_profile_summary, rss_after_phase, save_stats_json, PhaseTimer, ProfileData};
-use thread_pool::{configure_pool, ThreadPoolStrategy};
+use metrics::{PhaseTimer, ProfileData, print_profile_summary, rss_after_phase, save_stats_json};
+use thread_pool::{ThreadPoolStrategy, configure_pool};
 
 /// Sets up the thread pool configuration based on CLI arguments.
 fn setup_thread_pool(args: &Args) -> Result<()> {

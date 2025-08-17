@@ -14,13 +14,13 @@ use crate::data::{EntryType, FileEntry};
 use anyhow::{Context, Result};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use libc::{c_char, getpwuid_r, passwd, stat as libc_stat, stat};
-use std::collections::{hash_map::DefaultHasher, HashMap};
+use std::collections::{HashMap, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
 use std::mem::MaybeUninit;
 use std::os::unix::ffi::OsStrExt;
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::{ffi::CStr, ffi::CString, path::Path};
 
 /// Returns the actual disk usage (in bytes) of a file or directory.
@@ -223,7 +223,9 @@ pub fn get_owner(path: &Path) -> Option<String> {
         Err(_) => {
             // Panic occurred - mark getpwuid as broken and fallback to UID strings
             GETPWUID_BROKEN.store(true, Ordering::Relaxed);
-            eprintln!("Warning: getpwuid() is causing segfaults. Falling back to UID display for all remaining files.");
+            eprintln!(
+                "Warning: getpwuid() is causing segfaults. Falling back to UID display for all remaining files."
+            );
             uid.to_string()
         }
     };

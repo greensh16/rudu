@@ -281,7 +281,9 @@ mod tests {
                     assert!(!nearing || nearing);
                 }
                 None => {
-                    println!("ℹ️  Windows MemoryMonitor returned None - acceptable on some Windows versions");
+                    println!(
+                        "ℹ️  Windows MemoryMonitor returned None - acceptable on some Windows versions"
+                    );
 
                     // When RSS is unavailable, should bypass checks
                     let exceeds = monitor.exceeds_limit();

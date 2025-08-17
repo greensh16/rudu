@@ -1,9 +1,9 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use rudu::Args;
 use rudu::cli::SortKey;
 use rudu::scan::{scan_files_and_dirs, scan_files_and_dirs_incremental};
 use rudu::thread_pool::ThreadPoolStrategy;
 use rudu::utils::build_exclude_matcher;
-use rudu::Args;
 use std::fs;
 use std::path::Path;
 use tempfile::TempDir;

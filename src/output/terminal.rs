@@ -6,7 +6,7 @@
 use crate::cli::Args;
 use crate::data::{EntryType, FileEntry};
 use anyhow::Result;
-use humansize::{format_size, DECIMAL};
+use humansize::{DECIMAL, format_size};
 
 /// Renders file entries to terminal output.
 ///

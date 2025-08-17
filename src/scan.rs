@@ -19,20 +19,20 @@
 //! - Directory sizes are accumulated efficiently using parent path caching
 //! - Single-pass processing reduces memory allocations and improves cache locality
 
-use crate::cache::{load_cache, save_cache_with_mtime, CacheEntry};
+use crate::Args;
+use crate::cache::{CacheEntry, load_cache, save_cache_with_mtime};
 use crate::cli::SortKey;
 use crate::data::{EntryType, FileEntry};
 use crate::memory::MemoryMonitor;
 use crate::metrics::{PhaseResult, PhaseTimer};
 use crate::utils::{disk_usage, get_dir_metadata, get_owner, path_hash, sort_entries};
-use crate::Args;
 use anyhow::{Context, Result};
 use dashmap::DashMap;
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 use walkdir::WalkDir;
 
@@ -157,7 +157,7 @@ fn scan_with_work_stealing(
         // Identify large directories (> 10,000 entries)
         let large_dirs: Vec<_> = dir_entry_counts
             .iter()
-            .filter(|(_, &count)| count > 10_000)
+            .filter(|&(_, count)| *count > 10_000)
             .map(|(path, _)| path.clone())
             .collect();
 
@@ -220,7 +220,7 @@ fn scan_with_work_stealing(
                 if let Some(parent) = e.path().parent() {
                     dir_entry_counts
                         .get(parent)
-                        .is_none_or(|&count| count <= 10_000)
+                        .is_none_or(|count| *count <= 10_000)
                 } else {
                     true
                 }

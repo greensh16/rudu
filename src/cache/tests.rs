@@ -32,7 +32,7 @@ impl TestCacheGuard {
         let original_cache_enabled = crate::cache::is_enabled();
 
         // Set test environment
-        std::env::set_var("RUDU_CACHE_DIR", temp_dir.path());
+        unsafe { std::env::set_var("RUDU_CACHE_DIR", temp_dir.path()) };
         crate::cache::set_enabled(true);
 
         Ok(TestCacheGuard {
@@ -52,13 +52,13 @@ impl Drop for TestCacheGuard {
     fn drop(&mut self) {
         // Restore original environment variables
         match &self.original_rudu_cache_dir {
-            Some(value) => std::env::set_var("RUDU_CACHE_DIR", value),
-            None => std::env::remove_var("RUDU_CACHE_DIR"),
+            Some(value) => unsafe { std::env::set_var("RUDU_CACHE_DIR", value) },
+            None => unsafe { std::env::remove_var("RUDU_CACHE_DIR") },
         }
 
         match &self.original_xdg_cache_home {
-            Some(value) => std::env::set_var("XDG_CACHE_HOME", value),
-            None => std::env::remove_var("XDG_CACHE_HOME"),
+            Some(value) => unsafe { std::env::set_var("XDG_CACHE_HOME", value) },
+            None => unsafe { std::env::remove_var("XDG_CACHE_HOME") },
         }
 
         // Restore original cache enabled state

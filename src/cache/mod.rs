@@ -12,7 +12,7 @@ pub mod model;
 #[cfg(test)]
 mod tests;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use memmap2::{Mmap, MmapMut};
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
@@ -378,21 +378,21 @@ mod cache_root_tests {
         let custom_cache_path = temp_dir.path().to_string_lossy().to_string();
 
         // Set RUDU_CACHE_DIR environment variable
-        env::set_var("RUDU_CACHE_DIR", &custom_cache_path);
+        unsafe { env::set_var("RUDU_CACHE_DIR", &custom_cache_path) };
 
         // Test that cache_root() uses the custom directory
         let cache_root_result = cache_root();
         assert_eq!(cache_root_result, PathBuf::from(&custom_cache_path));
 
         // Clean up
-        env::remove_var("RUDU_CACHE_DIR");
+        unsafe { env::remove_var("RUDU_CACHE_DIR") };
     }
 
     #[test]
     fn test_cache_root_fallback_to_xdg() {
         let _lock = crate::cache::tests::safe_lock(&crate::cache::tests::CACHE_TEST_LOCK);
         // Ensure RUDU_CACHE_DIR is not set
-        env::remove_var("RUDU_CACHE_DIR");
+        unsafe { env::remove_var("RUDU_CACHE_DIR") };
 
         // Test that cache_root() falls back to XDG logic
         let cache_root_result = cache_root();
@@ -415,7 +415,7 @@ mod cache_root_tests {
         let original_cache_enabled = is_enabled();
 
         // Set RUDU_CACHE_DIR environment variable
-        env::set_var("RUDU_CACHE_DIR", &custom_cache_path);
+        unsafe { env::set_var("RUDU_CACHE_DIR", &custom_cache_path) };
 
         // Ensure caching is enabled for the test
         set_enabled(true);
@@ -456,8 +456,8 @@ mod cache_root_tests {
 
         // Clean up environment variables
         match original_rudu_cache_dir {
-            Some(value) => env::set_var("RUDU_CACHE_DIR", value),
-            None => env::remove_var("RUDU_CACHE_DIR"),
+            Some(value) => unsafe { env::set_var("RUDU_CACHE_DIR", value) },
+            None => unsafe { env::remove_var("RUDU_CACHE_DIR") },
         }
 
         // Restore original cache enabled state

@@ -21,7 +21,7 @@ use tempfile::TempDir;
 /// ```
 pub fn setup_temp_cache_dir() -> std::io::Result<TempDir> {
     let dir = tempfile::tempdir()?;
-    env::set_var("RUDU_CACHE_DIR", dir.path());
+    unsafe { env::set_var("RUDU_CACHE_DIR", dir.path()) };
     Ok(dir)
 }
 
