@@ -9,6 +9,11 @@ use std::sync::Mutex;
 // Static mutex to ensure cache tests run sequentially to avoid race conditions
 pub static CACHE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
+/// Helper function to safely acquire a mutex lock without panicking on poison
+pub fn safe_lock<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|poison| poison.into_inner())
+}
+
 /// A guard struct to ensure proper test isolation by restoring environment state
 struct TestCacheGuard {
     temp_dir: tempfile::TempDir,
@@ -71,7 +76,7 @@ fn setup_temp_cache_dir() -> std::io::Result<TestCacheGuard> {
 
 #[test]
 fn test_load_cache_nonexistent() {
-    let _lock = CACHE_TEST_LOCK.lock().unwrap();
+    let _lock = safe_lock(&CACHE_TEST_LOCK);
     let temp_dir = setup_temp_cache_dir().unwrap();
     let nonexistent_path = temp_dir.path().join("nonexistent");
 
@@ -81,7 +86,7 @@ fn test_load_cache_nonexistent() {
 
 #[test]
 fn test_save_and_load_cache_empty() {
-    let _lock = CACHE_TEST_LOCK.lock().unwrap();
+    let _lock = safe_lock(&CACHE_TEST_LOCK);
     let temp_dir = setup_temp_cache_dir().unwrap();
     let cache = HashMap::new();
 
@@ -95,7 +100,7 @@ fn test_save_and_load_cache_empty() {
 
 #[test]
 fn test_save_and_load_cache_with_entries() {
-    let _lock = CACHE_TEST_LOCK.lock().unwrap();
+    let _lock = safe_lock(&CACHE_TEST_LOCK);
     let temp_dir = setup_temp_cache_dir().unwrap();
     let mut cache = HashMap::new();
 
@@ -151,7 +156,7 @@ fn test_save_and_load_cache_with_entries() {
 
 #[test]
 fn test_save_and_load_large_cache() {
-    let _lock = CACHE_TEST_LOCK.lock().unwrap();
+    let _lock = safe_lock(&CACHE_TEST_LOCK);
     let temp_dir = setup_temp_cache_dir().unwrap();
     let mut cache = HashMap::new();
 
@@ -193,7 +198,7 @@ fn test_save_and_load_large_cache() {
 
 #[test]
 fn test_memory_mapped_io_performance() {
-    let _lock = CACHE_TEST_LOCK.lock().unwrap();
+    let _lock = safe_lock(&CACHE_TEST_LOCK);
     let temp_dir = setup_temp_cache_dir().unwrap();
     let mut cache = HashMap::new();
 
@@ -234,7 +239,7 @@ fn test_memory_mapped_io_performance() {
 
 #[test]
 fn test_cache_file_corruption_handling() {
-    let _lock = CACHE_TEST_LOCK.lock().unwrap();
+    let _lock = safe_lock(&CACHE_TEST_LOCK);
     let temp_dir = setup_temp_cache_dir().unwrap();
     let cache_path = temp_dir.path().join(".rudu-cache.bin");
 
@@ -248,7 +253,7 @@ fn test_cache_file_corruption_handling() {
 
 #[test]
 fn test_cache_directory_creation() {
-    let _lock = CACHE_TEST_LOCK.lock().unwrap();
+    let _lock = safe_lock(&CACHE_TEST_LOCK);
     let temp_dir = setup_temp_cache_dir().unwrap();
     let nested_path = temp_dir.path().join("nested").join("deep").join("path");
 
@@ -265,7 +270,7 @@ fn test_cache_directory_creation() {
 
 #[test]
 fn test_entry_validation() {
-    let _lock = CACHE_TEST_LOCK.lock().unwrap();
+    let _lock = safe_lock(&CACHE_TEST_LOCK);
     let temp_dir = setup_temp_cache_dir().unwrap();
     let mut cache = HashMap::new();
 
@@ -296,7 +301,7 @@ fn test_entry_validation() {
 
 #[test]
 fn test_cache_with_complex_paths() {
-    let _lock = CACHE_TEST_LOCK.lock().unwrap();
+    let _lock = safe_lock(&CACHE_TEST_LOCK);
     let temp_dir = setup_temp_cache_dir().unwrap();
     let mut cache = HashMap::new();
 
@@ -344,7 +349,7 @@ fn test_cache_with_complex_paths() {
 
 #[test]
 fn test_cache_with_unicode_paths() {
-    let _lock = CACHE_TEST_LOCK.lock().unwrap();
+    let _lock = safe_lock(&CACHE_TEST_LOCK);
     let temp_dir = setup_temp_cache_dir().unwrap();
     let mut cache = HashMap::new();
 
@@ -390,7 +395,7 @@ fn test_cache_with_unicode_paths() {
 
 #[test]
 fn test_cache_with_zero_size_files() {
-    let _lock = CACHE_TEST_LOCK.lock().unwrap();
+    let _lock = safe_lock(&CACHE_TEST_LOCK);
     let temp_dir = setup_temp_cache_dir().unwrap();
     let mut cache = HashMap::new();
 
@@ -421,7 +426,7 @@ fn test_cache_with_zero_size_files() {
 
 #[test]
 fn test_cache_concurrent_access() {
-    let _lock = CACHE_TEST_LOCK.lock().unwrap();
+    let _lock = safe_lock(&CACHE_TEST_LOCK);
     let temp_dir = setup_temp_cache_dir().unwrap();
     let temp_path = temp_dir.path().to_path_buf();
 
@@ -469,7 +474,7 @@ fn test_cache_concurrent_access() {
 
 #[test]
 fn test_cache_edge_cases() {
-    let _lock = CACHE_TEST_LOCK.lock().unwrap();
+    let _lock = safe_lock(&CACHE_TEST_LOCK);
     let temp_dir = setup_temp_cache_dir().unwrap();
 
     // Test with empty file name (should work)
@@ -515,7 +520,7 @@ fn test_cache_edge_cases() {
 
 #[test]
 fn test_cache_invalidation_integration() {
-    let _lock = CACHE_TEST_LOCK.lock().unwrap();
+    let _lock = safe_lock(&CACHE_TEST_LOCK);
     use super::load_cache;
     let temp_dir = setup_temp_cache_dir().unwrap();
     let mut cache = HashMap::new();
@@ -545,4 +550,36 @@ fn test_cache_invalidation_integration() {
     std::thread::sleep(std::time::Duration::from_millis(10));
     let loaded = load_cache(temp_dir.path(), 0);
     assert!(loaded.is_empty());
+}
+
+#[test]
+fn test_mutex_poison_recovery() {
+    use std::panic;
+    use std::sync::{Arc, Mutex};
+    use std::thread;
+
+    // Create a test mutex
+    let test_mutex = Arc::new(Mutex::new(42));
+    let test_mutex_clone = Arc::clone(&test_mutex);
+
+    // Spawn a thread that will panic while holding the lock, poisoning it
+    let handle = thread::spawn(move || {
+        let _lock = test_mutex_clone.lock().unwrap();
+        panic!("Intentional panic to poison mutex");
+    });
+
+    // Wait for the thread to panic
+    let result = handle.join();
+    assert!(result.is_err());
+
+    // Now test that safe_lock can recover from poisoned mutex
+    let mut recovered_guard = safe_lock(&*test_mutex);
+    assert_eq!(*recovered_guard, 42);
+
+    // Verify we can still use the mutex normally after recovery
+    *recovered_guard = 100;
+    drop(recovered_guard);
+
+    let normal_guard = safe_lock(&*test_mutex);
+    assert_eq!(*normal_guard, 100);
 }

@@ -373,7 +373,7 @@ mod cache_root_tests {
 
     #[test]
     fn test_cache_root_with_rudu_cache_dir() {
-        let _lock = crate::cache::tests::CACHE_TEST_LOCK.lock().unwrap();
+        let _lock = crate::cache::tests::safe_lock(&crate::cache::tests::CACHE_TEST_LOCK);
         let temp_dir = TempDir::new().unwrap();
         let custom_cache_path = temp_dir.path().to_string_lossy().to_string();
 
@@ -390,7 +390,7 @@ mod cache_root_tests {
 
     #[test]
     fn test_cache_root_fallback_to_xdg() {
-        let _lock = crate::cache::tests::CACHE_TEST_LOCK.lock().unwrap();
+        let _lock = crate::cache::tests::safe_lock(&crate::cache::tests::CACHE_TEST_LOCK);
         // Ensure RUDU_CACHE_DIR is not set
         env::remove_var("RUDU_CACHE_DIR");
 
@@ -406,7 +406,7 @@ mod cache_root_tests {
 
     #[test]
     fn test_cache_operations_use_configurable_directory() {
-        let _lock = crate::cache::tests::CACHE_TEST_LOCK.lock().unwrap();
+        let _lock = crate::cache::tests::safe_lock(&crate::cache::tests::CACHE_TEST_LOCK);
         let temp_dir = TempDir::new().unwrap();
         let custom_cache_path = temp_dir.path().to_string_lossy().to_string();
 
