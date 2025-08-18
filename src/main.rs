@@ -205,7 +205,9 @@ fn main() -> Result<()> {
     // Create memory monitor if memory limit is specified
     let memory_monitor = if let Some(memory_limit_mb) = modified_args.memory_limit {
         println!("Memory limit set to {} MB", memory_limit_mb);
-        println!("WARNING: HPC mode: Using conservative settings for resource-constrained environments");
+        println!(
+            "WARNING: HPC mode: Using conservative settings for resource-constrained environments"
+        );
         let monitor = memory::MemoryMonitor::new_with_interval(
             memory_limit_mb,
             modified_args.memory_check_interval_ms,
