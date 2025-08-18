@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.4.0] - 2025-08-06
+## [1.4.0] - 2025-08-18
 
 ### Major Features Added
 
@@ -131,6 +131,38 @@ Memory-limited scanning performance:
 | 100K files | 512MB | 2.3s | 487MB | Normal |
 | 500K files | 512MB | 8.1s | 498MB | Nearing limit |
 | 1M files | 512MB | 12.7s | 512MB+ | Early termination |
+
+### Bug Fixes and Stability Improvements
+
+#### Caching System Fixes
+- **Cache test reliability** improvements with better test isolation and cleanup
+- **Cache file handling** robustness improvements for edge cases
+- **Memory-mapped cache** stability enhancements
+- **Cache invalidation** logic fixes for better reliability
+
+#### Code Quality and Linting
+- **Clippy warnings resolved** - all code now passes strict linting requirements
+- **Code formatting** standardized across all modules and benchmarks
+- **Benchmark consistency** improvements across all performance tests
+- **Example code** cleaned up and validated
+
+#### CI/CD Pipeline Improvements
+- **GitHub Actions workflow** optimization for faster CI runs
+- **Test reliability** improvements with better resource management
+- **Build process** streamlining and dependency management
+
+#### Documentation and Examples
+- **New tutorial documentation** added in `docs/basic-usage.md`
+- **Comprehensive exclusion guide** in `docs/exclude_tutorial.md` with 490+ lines of examples
+- **Memory monitor demo example** showing practical memory limiting usage
+- **Cache disable demo** for testing memory-constrained environments
+- **Enhanced benchmarking** with new overhead benchmark suite
+
+#### Developer Experience
+- **Test coverage improvements** with additional integration tests
+- **Better error messages** and debugging information
+- **Enhanced utilities** for development and testing workflows
+- **Improved project structure** with better module organization
 
 ### Future Roadmap
 

@@ -107,7 +107,7 @@ rudu /project --exclude .git --exclude node_modules --exclude target
 rudu /data --show-files=false
 ```
 
-> 📖 **For comprehensive exclusion examples**: See the [complete `--exclude` tutorial](docs/exclude_tutorial.md) with real-world patterns, troubleshooting, and best practices.
+> **For comprehensive exclusion examples**: See the [complete `--exclude` tutorial](docs/exclude_tutorial.md) with real-world patterns, troubleshooting, and best practices.
 
 ### Sorting and Analysis
 ```bash

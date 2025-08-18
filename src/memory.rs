@@ -79,7 +79,7 @@ impl MemoryMonitor {
         if now.duration_since(self.last_check) < self.check_interval {
             // Return cached value by getting the process memory without refresh
             if let Some(process) = self.system.process(self.pid) {
-                return Some(process.memory() * 1024); // sysinfo returns KB, convert to bytes
+                return Some(process.memory()); // sysinfo returns bytes
             }
             return None;
         }

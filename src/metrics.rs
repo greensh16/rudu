@@ -222,9 +222,9 @@ pub fn rss_after_phase() -> Option<u64> {
     // Find the current process
     for (pid, process) in system.processes() {
         if pid.as_u32() == current_pid {
-            // Convert from KB to bytes
-            // On Unix-like systems, sysinfo reliably reports RSS via system calls
-            return Some(process.memory() * 1024);
+            // sysinfo returns memory in bytes on most platforms
+            // No conversion needed as we want bytes
+            return Some(process.memory());
         }
     }
 
@@ -245,9 +245,9 @@ pub fn rss_after_phase() -> Option<u64> {
     // Find the current process
     for (pid, process) in system.processes() {
         if pid.as_u32() == current_pid {
-            // Convert from KB to bytes
-            // Note: Windows RSS reporting is best-effort and may vary by Windows version
-            return Some(process.memory() * 1024);
+            // sysinfo returns memory in bytes on most platforms
+            // No conversion needed as we want bytes
+            return Some(process.memory());
         }
     }
 

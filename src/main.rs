@@ -188,7 +188,7 @@ fn main() -> Result<()> {
         // Use at most 2 threads in HPC mode to reduce memory pressure
         modified_args.threads = Some(std::cmp::min(2, num_cpus::get()));
         println!(
-            "🧵 HPC mode: Using {} threads to minimize memory usage",
+            "HPC mode: Using {} threads to minimize memory usage",
             modified_args.threads.unwrap()
         );
     }
@@ -204,8 +204,8 @@ fn main() -> Result<()> {
 
     // Create memory monitor if memory limit is specified
     let memory_monitor = if let Some(memory_limit_mb) = modified_args.memory_limit {
-        println!("🔍 Memory limit set to {} MB", memory_limit_mb);
-        println!("⚠️  HPC mode: Using conservative settings for resource-constrained environments");
+        println!("Memory limit set to {} MB", memory_limit_mb);
+        println!("WARNING: HPC mode: Using conservative settings for resource-constrained environments");
         let monitor = memory::MemoryMonitor::new_with_interval(
             memory_limit_mb,
             modified_args.memory_check_interval_ms,
@@ -237,7 +237,7 @@ fn main() -> Result<()> {
     // Check if memory limit was hit during scanning
     if scan_result.memory_limit_hit {
         eprintln!(
-            "⚠️  Memory limit reached ({} MB). Showing partial results.",
+            "WARNING: Memory limit reached ({} MB). Showing partial results.",
             modified_args.memory_limit.unwrap()
         );
     }
