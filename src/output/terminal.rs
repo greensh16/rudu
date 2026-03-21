@@ -7,27 +7,26 @@ use crate::cli::Args;
 use crate::data::{EntryType, FileEntry};
 use anyhow::Result;
 use humansize::{DECIMAL, format_size};
+use std::path::Path;
 
 /// Renders file entries to terminal output.
 ///
 /// # Arguments
 /// * `entries` - A slice of already-filtered and sorted file entries to render
 /// * `args` - Command line arguments that control output formatting
+/// * `root` - The root path used to strip path prefixes from output
 ///
 /// # Returns
 /// * `Result<()>` - Ok if rendering succeeded, Err if there was an issue
-///
-/// # Note
-/// This function accepts pre-filtered and sorted entries and contains no business logic.
-/// It formats lines exactly as the current implementation: \[DIR\] and \[FILE\] prefixes,
-/// using humansize for human-readable sizes.
-pub fn render(entries: &[FileEntry], args: &Args) -> Result<()> {
+pub fn render(entries: &[FileEntry], args: &Args, root: &Path) -> Result<()> {
     for entry in entries {
         let owner = if args.show_owner {
             entry.owner.clone().unwrap_or_else(|| "unknown".to_string())
         } else {
             "".to_string()
         };
+
+        let display_path = entry.path.strip_prefix(root).unwrap_or(&entry.path);
 
         match entry.entry_type {
             EntryType::Dir => {
@@ -37,14 +36,14 @@ pub fn render(entries: &[FileEntry], args: &Args) -> Result<()> {
                         format_size(entry.size, DECIMAL),
                         owner,
                         entry.inodes.unwrap_or(0),
-                        entry.path.display()
+                        display_path.display()
                     );
                 } else {
                     println!(
                         "[DIR]  {:<12} {:<10} {}",
                         format_size(entry.size, DECIMAL),
                         owner,
-                        entry.path.display()
+                        display_path.display()
                     );
                 }
             }
@@ -53,7 +52,7 @@ pub fn render(entries: &[FileEntry], args: &Args) -> Result<()> {
                     "[FILE] {:<12} {:<10} {}",
                     format_size(entry.size, DECIMAL),
                     owner,
-                    entry.path.display()
+                    display_path.display()
                 );
             }
         }
