@@ -26,9 +26,6 @@
 
 use anyhow::Result;
 use clap::Parser;
-use csv::Writer;
-use humansize::{DECIMAL, format_size};
-use std::fs::File;
 use std::path::Path;
 
 mod utils;
@@ -36,7 +33,7 @@ use utils::{build_exclude_matcher, expand_exclude_patterns, path_depth};
 mod scan;
 use scan::scan_files_and_dirs;
 pub mod cli;
-use cli::{Args, CsvEntry};
+use cli::Args;
 mod data;
 pub use data::{EntryType, FileEntry};
 pub mod cache;
@@ -52,7 +49,7 @@ fn setup_thread_pool(args: &Args) -> Result<()> {
     // Skip global thread pool setup when --threads is specified
     // as we'll use local thread pools in the scan module instead
     if args.threads.is_some() {
-        println!(
+        eprintln!(
             "Using local thread pool with {} threads",
             args.threads.unwrap()
         );
@@ -62,7 +59,15 @@ fn setup_thread_pool(args: &Args) -> Result<()> {
     // Use the new thread pool configuration system for other strategies
     let n_threads = match args.threads_strategy {
         ThreadPoolStrategy::Default => num_cpus::get(),
-        ThreadPoolStrategy::Fixed => num_cpus::get(), // Default to num_cpus if not specified
+        ThreadPoolStrategy::Fixed => {
+            if args.threads.is_none() {
+                eprintln!(
+                    "Warning: --threads-strategy fixed requires --threads N; \
+                     falling back to all CPUs."
+                );
+            }
+            num_cpus::get()
+        }
         ThreadPoolStrategy::NumCpusMinus1 => std::cmp::max(1, num_cpus::get() - 1),
         ThreadPoolStrategy::IOHeavy => num_cpus::get() * 2,
         ThreadPoolStrategy::WorkStealingUneven => num_cpus::get(),
@@ -81,7 +86,7 @@ fn process_entries(root: &Path, args: &Args, raw: Vec<FileEntry>) -> Vec<FileEnt
             match entry.entry_type {
                 EntryType::Dir => args.depth.map(|d| depth <= d).unwrap_or(true),
                 EntryType::File => {
-                    args.show_files && args.depth.map(|d| depth == d).unwrap_or(true)
+                    args.show_files && args.depth.map(|d| depth <= d).unwrap_or(true)
                 }
             }
         })
@@ -89,64 +94,15 @@ fn process_entries(root: &Path, args: &Args, raw: Vec<FileEntry>) -> Vec<FileEnt
 }
 
 /// Outputs the results either to CSV file or terminal based on CLI arguments.
+///
+/// Delegates to the modular output formatters in [`output`] so that both
+/// code paths share the same serialisation logic and schema.
 fn output_results(entries: &[FileEntry], args: &Args, root: &Path) -> Result<()> {
-    if let Some(csv_path) = &args.output {
-        // CSV output
-        let file = File::create(csv_path)?;
-        let mut writer = Writer::from_writer(file);
-
-        for entry in entries {
-            let csv_entry = CsvEntry {
-                entry_type: entry.entry_type.as_str().into(),
-                size_bytes: entry.size,
-                size_human: format_size(entry.size, DECIMAL),
-                owner: entry.owner.clone(),
-                path: entry.path.display().to_string(),
-                inodes: entry.inodes,
-            };
-            writer.serialize(csv_entry)?;
-        }
-        writer.flush()?;
-        println!("Output saved to: {}", csv_path);
+    if args.output.is_some() {
+        output::render_csv(entries, args)
     } else {
-        // Terminal output
-        for entry in entries {
-            let owner = if args.show_owner {
-                entry.owner.clone().unwrap_or_else(|| "unknown".to_string())
-            } else {
-                "".to_string()
-            };
-
-            match entry.entry_type {
-                EntryType::Dir => {
-                    println!(
-                        "[DIR]  {:<12} {:<10} {:<6} {}",
-                        format_size(entry.size, DECIMAL),
-                        owner,
-                        entry.inodes.unwrap_or(0),
-                        entry
-                            .path
-                            .strip_prefix(root)
-                            .unwrap_or(&entry.path)
-                            .display()
-                    );
-                }
-                EntryType::File => {
-                    println!(
-                        "[FILE] {:<12} {:<10} {}",
-                        format_size(entry.size, DECIMAL),
-                        owner,
-                        entry
-                            .path
-                            .strip_prefix(root)
-                            .unwrap_or(&entry.path)
-                            .display()
-                    );
-                }
-            }
-        }
+        output::render_terminal(entries, args, root)
     }
-    Ok(())
 }
 
 fn main() -> Result<()> {
@@ -161,17 +117,17 @@ fn main() -> Result<()> {
     };
 
     // Print banner
-    println!(
+    eprintln!(
         r#"
 ------------------------------------------------------------------
-        .______       __    __   _______   __    __  
-        |   _  \     |  |  |  | |       \ |  |  |  | 
-        |  |_)  |    |  |  |  | |  .--.  ||  |  |  | 
-        |      /     |  |  |  | |  |  |  ||  |  |  | 
-        |  |\  \----.|  `--'  | |  '--'  ||  `--'  | 
+        .______       __    __   _______   __    __
+        |   _  \     |  |  |  | |       \ |  |  |  |
+        |  |_)  |    |  |  |  | |  .--.  ||  |  |  |
+        |      /     |  |  |  | |  |  |  ||  |  |  |
+        |  |\  \----.|  `--'  | |  '--'  ||  `--'  |
         | _| `._____| \______/  |_______/  \______/
                     Rust-based du tool
-------------------------------------------------------------------            
+------------------------------------------------------------------
                     "#
     );
 
@@ -187,7 +143,7 @@ fn main() -> Result<()> {
     if args.memory_limit.is_some() && args.threads.is_none() {
         // Use at most 2 threads in HPC mode to reduce memory pressure
         modified_args.threads = Some(std::cmp::min(2, num_cpus::get()));
-        println!(
+        eprintln!(
             "HPC mode: Using {} threads to minimize memory usage",
             modified_args.threads.unwrap()
         );
@@ -204,8 +160,8 @@ fn main() -> Result<()> {
 
     // Create memory monitor if memory limit is specified
     let memory_monitor = if let Some(memory_limit_mb) = modified_args.memory_limit {
-        println!("Memory limit set to {} MB", memory_limit_mb);
-        println!(
+        eprintln!("Memory limit set to {} MB", memory_limit_mb);
+        eprintln!(
             "WARNING: HPC mode: Using conservative settings for resource-constrained environments"
         );
         let monitor = memory::MemoryMonitor::new_with_interval(

@@ -1,7 +1,7 @@
 //! Unit tests for the cache loader and writer with memory-mapped IO
 
 use super::*;
-use crate::cache::model::CacheEntry;
+use crate::cache::model::{CacheEntry, CacheEntryParams};
 use crate::data::EntryType;
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -105,27 +105,25 @@ fn test_save_and_load_cache_with_entries() {
     let mut cache = HashMap::new();
 
     // Create some test entries
-    let entry1 = CacheEntry::new(
-        12345,
-        PathBuf::from("test1.txt"),
-        1024,
-        1234567890,
-        2, // nlink
-        Some(42),
-        Some(1000),
-        EntryType::File,
-    );
+    let entry1 = CacheEntry::new(CacheEntryParams {
+        path: PathBuf::from("test1.txt"),
+        size: 1024,
+        mtime: 1234567890,
+        nlink: 2,
+        inode_cnt: Some(42),
+        owner: Some(1000),
+        entry_type: EntryType::File,
+    });
 
-    let entry2 = CacheEntry::new(
-        67890,
-        PathBuf::from("test2"),
-        2048,
-        1234567891,
-        3, // nlink
-        Some(100),
-        Some(1001),
-        EntryType::Dir,
-    );
+    let entry2 = CacheEntry::new(CacheEntryParams {
+        path: PathBuf::from("test2"),
+        size: 2048,
+        mtime: 1234567891,
+        nlink: 3,
+        inode_cnt: Some(100),
+        owner: Some(1001),
+        entry_type: EntryType::Dir,
+    });
 
     cache.insert(PathBuf::from("test1.txt"), entry1.clone());
     cache.insert(PathBuf::from("test2"), entry2.clone());
@@ -161,22 +159,21 @@ fn test_save_and_load_large_cache() {
     let mut cache = HashMap::new();
 
     // Create a large cache with many entries
-    for i in 0..10000 {
+    for i in 0u64..10000 {
         let path = PathBuf::from(format!("file_{}", i));
-        let entry = CacheEntry::new(
-            i,
-            path.clone(),
-            i * 1024,
-            1234567890 + i,
-            i + 2, // nlink
-            Some(i),
-            Some(1000),
-            if i % 2 == 0 {
+        let entry = CacheEntry::new(CacheEntryParams {
+            path: path.clone(),
+            size: i * 1024,
+            mtime: 1234567890 + i,
+            nlink: i + 2,
+            inode_cnt: Some(i),
+            owner: Some(1000),
+            entry_type: if i % 2 == 0 {
                 EntryType::File
             } else {
                 EntryType::Dir
             },
-        );
+        });
         cache.insert(path, entry);
     }
 
@@ -203,18 +200,17 @@ fn test_memory_mapped_io_performance() {
     let mut cache = HashMap::new();
 
     // Create a moderately large cache
-    for i in 0..1000 {
+    for i in 0u64..1000 {
         let path = PathBuf::from(format!("file_{}", i));
-        let entry = CacheEntry::new(
-            i,
-            path.clone(),
-            i * 1024,
-            1234567890 + i,
-            i + 1, // nlink
-            Some(i),
-            Some(1000),
-            EntryType::File,
-        );
+        let entry = CacheEntry::new(CacheEntryParams {
+            path: path.clone(),
+            size: i * 1024,
+            mtime: 1234567890 + i,
+            nlink: i + 1,
+            inode_cnt: Some(i),
+            owner: Some(1000),
+            entry_type: EntryType::File,
+        });
         cache.insert(path, entry);
     }
 
@@ -274,16 +270,15 @@ fn test_entry_validation() {
     let temp_dir = setup_temp_cache_dir().unwrap();
     let mut cache = HashMap::new();
 
-    let entry = CacheEntry::new(
-        12345,
-        PathBuf::from("test.txt"),
-        1024,
-        1234567890,
-        2, // nlink
-        Some(42),
-        Some(1000),
-        EntryType::File,
-    );
+    let entry = CacheEntry::new(CacheEntryParams {
+        path: PathBuf::from("test.txt"),
+        size: 1024,
+        mtime: 1234567890,
+        nlink: 2,
+        inode_cnt: Some(42),
+        owner: Some(1000),
+        entry_type: EntryType::File,
+    });
 
     cache.insert(PathBuf::from("test.txt"), entry);
 
@@ -319,16 +314,15 @@ fn test_cache_with_complex_paths() {
     ];
 
     for (i, path) in paths.iter().enumerate() {
-        let entry = CacheEntry::new(
-            i as u64,
-            path.clone(),
-            ((i + 1) * 1024) as u64,
-            1234567890 + i as u64,
-            (i + 2) as u64, // nlink
-            Some(i as u64),
-            Some(1000),
-            EntryType::File,
-        );
+        let entry = CacheEntry::new(CacheEntryParams {
+            path: path.clone(),
+            size: ((i + 1) * 1024) as u64,
+            mtime: 1234567890 + i as u64,
+            nlink: (i + 2) as u64,
+            inode_cnt: Some(i as u64),
+            owner: Some(1000),
+            entry_type: EntryType::File,
+        });
         cache.insert(path.clone(), entry);
     }
 
@@ -365,16 +359,15 @@ fn test_cache_with_unicode_paths() {
     ];
 
     for (i, path) in unicode_paths.iter().enumerate() {
-        let entry = CacheEntry::new(
-            i as u64,
-            path.clone(),
-            ((i + 1) * 1024) as u64,
-            1234567890 + i as u64,
-            (i + 2) as u64, // nlink
-            Some(i as u64),
-            Some(1000),
-            EntryType::File,
-        );
+        let entry = CacheEntry::new(CacheEntryParams {
+            path: path.clone(),
+            size: ((i + 1) * 1024) as u64,
+            mtime: 1234567890 + i as u64,
+            nlink: (i + 2) as u64,
+            inode_cnt: Some(i as u64),
+            owner: Some(1000),
+            entry_type: EntryType::File,
+        });
         cache.insert(path.clone(), entry);
     }
 
@@ -400,16 +393,15 @@ fn test_cache_with_zero_size_files() {
     let mut cache = HashMap::new();
 
     // Test with zero-size files
-    let entry = CacheEntry::new(
-        12345,
-        PathBuf::from("empty.txt"),
-        0, // Zero size
-        1234567890,
-        1, // nlink
-        Some(0),
-        Some(1000),
-        EntryType::File,
-    );
+    let entry = CacheEntry::new(CacheEntryParams {
+        path: PathBuf::from("empty.txt"),
+        size: 0,
+        mtime: 1234567890,
+        nlink: 1,
+        inode_cnt: Some(0),
+        owner: Some(1000),
+        entry_type: EntryType::File,
+    });
 
     cache.insert(PathBuf::from("empty.txt"), entry);
 
@@ -432,18 +424,17 @@ fn test_cache_concurrent_access() {
 
     // Create initial cache
     let mut cache = HashMap::new();
-    for i in 0..100 {
+    for i in 0u64..100 {
         let path = PathBuf::from(format!("file_{}", i));
-        let entry = CacheEntry::new(
-            i,
-            path.clone(),
-            i * 1024,
-            1234567890 + i,
-            i + 1, // nlink
-            Some(i),
-            Some(1000),
-            EntryType::File,
-        );
+        let entry = CacheEntry::new(CacheEntryParams {
+            path: path.clone(),
+            size: i * 1024,
+            mtime: 1234567890 + i,
+            nlink: i + 1,
+            inode_cnt: Some(i),
+            owner: Some(1000),
+            entry_type: EntryType::File,
+        });
         cache.insert(path, entry);
     }
 
@@ -479,16 +470,15 @@ fn test_cache_edge_cases() {
 
     // Test with empty file name (should work)
     let mut cache = HashMap::new();
-    let entry = CacheEntry::new(
-        12345,
-        PathBuf::from(""),
-        1024,
-        1234567890,
-        2, // nlink
-        Some(42),
-        Some(1000),
-        EntryType::File,
-    );
+    let entry = CacheEntry::new(CacheEntryParams {
+        path: PathBuf::from(""),
+        size: 1024,
+        mtime: 1234567890,
+        nlink: 2,
+        inode_cnt: Some(42),
+        owner: Some(1000),
+        entry_type: EntryType::File,
+    });
     cache.insert(PathBuf::from(""), entry);
 
     save_cache(temp_dir.path(), &cache).unwrap();
@@ -498,16 +488,15 @@ fn test_cache_edge_cases() {
     // Test with very long path
     let long_path = PathBuf::from("a".repeat(1000));
     let mut cache = HashMap::new();
-    let entry = CacheEntry::new(
-        67890,
-        long_path.clone(),
-        2048,
-        1234567891,
-        3, // nlink
-        Some(100),
-        Some(1001),
-        EntryType::File,
-    );
+    let entry = CacheEntry::new(CacheEntryParams {
+        path: long_path.clone(),
+        size: 2048,
+        mtime: 1234567891,
+        nlink: 3,
+        inode_cnt: Some(100),
+        owner: Some(1001),
+        entry_type: EntryType::File,
+    });
     cache.insert(long_path.clone(), entry);
 
     save_cache(temp_dir.path(), &cache).unwrap();
@@ -526,16 +515,15 @@ fn test_cache_invalidation_integration() {
     let mut cache = HashMap::new();
 
     // Create a cache entry
-    let entry = CacheEntry::new(
-        12345,
-        PathBuf::from("test.txt"),
-        1024,
-        1234567890,
-        2,
-        Some(42),
-        Some(1000),
-        EntryType::File,
-    );
+    let entry = CacheEntry::new(CacheEntryParams {
+        path: PathBuf::from("test.txt"),
+        size: 1024,
+        mtime: 1234567890,
+        nlink: 2,
+        inode_cnt: Some(42),
+        owner: Some(1000),
+        entry_type: EntryType::File,
+    });
     cache.insert(PathBuf::from("test.txt"), entry);
 
     // Save cache

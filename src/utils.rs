@@ -10,11 +10,11 @@
 //! Used throughout the main binary for performance and filtering.
 
 use crate::cli::SortKey;
-use crate::data::{EntryType, FileEntry};
+use crate::data::FileEntry;
 use anyhow::{Context, Result};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use libc::{c_char, getpwuid_r, passwd, stat as libc_stat, stat};
-use std::collections::{HashMap, hash_map::DefaultHasher};
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::mem::MaybeUninit;
 use std::os::unix::ffi::OsStrExt;
@@ -57,26 +57,6 @@ pub fn path_depth(root: &Path, path: &Path) -> usize {
     path.strip_prefix(root)
         .map(|p| p.components().count())
         .unwrap_or(0)
-}
-
-/// Filters entries by depth based on the root path and optional depth limit.
-#[allow(dead_code)]
-pub fn filter_by_depth<'a>(
-    entries: &'a [FileEntry],
-    root: &Path,
-    depth: Option<usize>,
-    show_files: bool,
-) -> Vec<&'a FileEntry> {
-    entries
-        .iter()
-        .filter(|entry| {
-            let entry_depth = path_depth(root, &entry.path);
-            match entry.entry_type {
-                EntryType::Dir => depth.map(|d| entry_depth <= d).unwrap_or(true),
-                EntryType::File => show_files && depth.map(|d| entry_depth == d).unwrap_or(true),
-            }
-        })
-        .collect()
 }
 
 /// Sorts entries based on the provided sort key.
@@ -302,9 +282,12 @@ pub fn get_dir_metadata(path: &Path) -> Option<DirMetadata> {
     })
 }
 
-/// Calculate a hash of a path for use in cache lookups
+/// Calculate a stable, version-independent hash of a path for use in cache lookups.
+///
+/// Uses FNV-1a rather than `DefaultHasher`, which has no cross-version stability
+/// guarantee and would silently invalidate on-disk cache files after a Rust upgrade.
 pub fn path_hash(path: &Path) -> u64 {
-    let mut hasher = DefaultHasher::new();
+    let mut hasher = fnv::FnvHasher::default();
     path.hash(&mut hasher);
     hasher.finish()
 }

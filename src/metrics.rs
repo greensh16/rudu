@@ -355,7 +355,7 @@ pub fn save_stats_json(
 
     std::fs::write(&stats_path, serde_json::to_string_pretty(&stats)?)?;
 
-    println!("Performance stats saved to: {}", stats_path.display());
+    eprintln!("Performance stats saved to: {}", stats_path.display());
 
     Ok(())
 }

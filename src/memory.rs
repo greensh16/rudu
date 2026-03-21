@@ -68,7 +68,11 @@ impl MemoryMonitor {
         }
     }
 
-    /// Get the current RSS memory usage, with throttling to minimize overhead
+    /// Get the current RSS memory usage, with throttling to minimize overhead.
+    ///
+    /// Both code paths use the same `self.system` instance with a targeted
+    /// `refresh_process` call, avoiding the expensive `System::new_all()` that
+    /// `rss_after_phase` uses and keeping readings consistent.
     ///
     /// Returns None if RSS is not available on this platform, signaling that
     /// memory monitoring should be bypassed entirely.
@@ -77,22 +81,14 @@ impl MemoryMonitor {
 
         // Throttle checks to avoid excessive overhead
         if now.duration_since(self.last_check) < self.check_interval {
-            // Return cached value by getting the process memory without refresh
-            if let Some(process) = self.system.process(self.pid) {
-                return Some(process.memory()); // sysinfo returns bytes
-            }
-            return None;
+            // Return the last cached reading from self.system
+            return self.system.process(self.pid).map(|p| p.memory());
         }
 
-        // Update last check time
+        // Update last check time and do a targeted refresh of only this process
         self.last_check = now;
-
-        // Refresh process information
         self.system.refresh_process(self.pid);
-
-        // Get current process memory usage (RSS)
-        // Use the same RSS function that metrics uses for consistency
-        crate::metrics::rss_after_phase()
+        self.system.process(self.pid).map(|p| p.memory())
     }
 
     #[cfg(test)]

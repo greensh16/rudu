@@ -54,6 +54,29 @@ pub struct CacheEntry {
     pub entry_type: EntryType,
 }
 
+/// Named parameters for constructing a [`CacheEntry`].
+///
+/// Prefer this over the 8-positional-argument form: named fields make call
+/// sites self-documenting and resilient to field reordering.  The `path_hash`
+/// is derived automatically from `path` using the stable FNV-1a hasher, so
+/// callers never need to supply it explicitly.
+pub struct CacheEntryParams {
+    /// The file or directory path
+    pub path: PathBuf,
+    /// Size of the file/directory in bytes
+    pub size: u64,
+    /// Last modification time (Unix timestamp)
+    pub mtime: u64,
+    /// Number of hard links
+    pub nlink: u64,
+    /// Number of inodes (directories only)
+    pub inode_cnt: Option<u64>,
+    /// Owner user ID
+    pub owner: Option<u32>,
+    /// Whether this entry is a file or directory
+    pub entry_type: EntryType,
+}
+
 /// Complete cache structure containing header and entries
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Cache {
@@ -143,27 +166,21 @@ impl CacheHeader {
 }
 
 impl CacheEntry {
-    /// Create a new cache entry from file metadata
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        path_hash: u64,
-        path: PathBuf,
-        size: u64,
-        mtime: u64,
-        nlink: u64,
-        inode_cnt: Option<u64>,
-        owner: Option<u32>,
-        entry_type: EntryType,
-    ) -> Self {
+    /// Create a new cache entry from named parameters.
+    ///
+    /// The `path_hash` field is derived automatically from `params.path`
+    /// using the stable FNV-1a hasher, so callers do not supply it.
+    pub fn new(params: CacheEntryParams) -> Self {
+        let path_hash = calculate_path_hash(&params.path);
         Self {
             path_hash,
-            path,
-            size,
-            mtime,
-            nlink,
-            inode_cnt,
-            owner,
-            entry_type,
+            path: params.path,
+            size: params.size,
+            mtime: params.mtime,
+            nlink: params.nlink,
+            inode_cnt: params.inode_cnt,
+            owner: params.owner,
+            entry_type: params.entry_type,
         }
     }
 
@@ -235,39 +252,6 @@ impl Cache {
         Ok(())
     }
 
-    /// Get the cache file path for a given root directory
-    ///
-    /// First tries to use `<root>/.rudu-cache.bin`. If the root directory
-    /// is not writable, falls back to `RUDU_CACHE_DIR` (if set) or XDG cache directory
-    /// as `<cache_dir>/rudu/<hash>.bin` where `<hash>` is a hash of the root path.
-    pub fn get_cache_path(root: &Path) -> Result<PathBuf> {
-        // Try primary location: <root>/.rudu-cache.bin
-        let primary_path = root.join(".rudu-cache.bin");
-
-        // Check if we can write to the root directory
-        if root.is_dir() && is_writable(root) {
-            return Ok(primary_path);
-        }
-
-        // Fallback to configurable cache directory
-        let cache_dir = super::cache_root();
-        let rudu_cache_dir = cache_dir.join("rudu");
-
-        // Create the rudu cache directory if it doesn't exist
-        std::fs::create_dir_all(&rudu_cache_dir).with_context(|| {
-            format!(
-                "Failed to create cache directory: {}",
-                rudu_cache_dir.display()
-            )
-        })?;
-
-        // Generate a hash of the root path for the filename
-        let root_hash = calculate_path_hash(root);
-        let cache_file = rudu_cache_dir.join(format!("{:x}.bin", root_hash));
-
-        Ok(cache_file)
-    }
-
     /// Get the cache file path for a given root directory without performing write test
     ///
     /// This function always uses the configurable cache directory to avoid changing the
@@ -293,20 +277,6 @@ impl Cache {
     }
 }
 
-/// Check if a directory is writable
-fn is_writable(path: &Path) -> bool {
-    // Try creating a temporary file to test write permissions
-    let temp_file = path.join(".rudu-write-test");
-    match std::fs::write(&temp_file, b"test") {
-        Ok(_) => {
-            // Clean up the test file
-            let _ = std::fs::remove_file(&temp_file);
-            true
-        }
-        Err(_) => false,
-    }
-}
-
 /// Get the XDG cache directory, falling back to a default if not set
 pub fn get_xdg_cache_dir() -> Result<PathBuf> {
     if let Ok(xdg_cache) = std::env::var("XDG_CACHE_HOME") {
@@ -320,12 +290,14 @@ pub fn get_xdg_cache_dir() -> Result<PathBuf> {
     }
 }
 
-/// Calculate a hash of a path for use in cache file names
+/// Calculate a stable, version-independent hash of a path for use in cache file names.
+///
+/// Uses FNV-1a rather than `DefaultHasher` to ensure the hash is consistent
+/// across Rust versions and does not silently orphan on-disk cache files after upgrades.
 fn calculate_path_hash(path: &Path) -> u64 {
-    use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
-    let mut hasher = DefaultHasher::new();
+    let mut hasher = fnv::FnvHasher::default();
     path.hash(&mut hasher);
     hasher.finish()
 }
@@ -356,18 +328,18 @@ mod tests {
     #[test]
     fn test_cache_entry_creation() {
         let path = PathBuf::from("/test/file");
-        let entry = CacheEntry::new(
-            12345,
-            path.clone(),
-            1024,
-            1234567890,
-            2,
-            Some(42),
-            Some(1000),
-            EntryType::File,
-        );
+        let entry = CacheEntry::new(CacheEntryParams {
+            path: path.clone(),
+            size: 1024,
+            mtime: 1234567890,
+            nlink: 2,
+            inode_cnt: Some(42),
+            owner: Some(1000),
+            entry_type: EntryType::File,
+        });
 
-        assert_eq!(entry.path_hash, 12345);
+        // path_hash is derived from path — verify it matches the stable FNV hash
+        assert_eq!(entry.path_hash, calculate_path_hash(&path));
         assert_eq!(entry.path, path);
         assert_eq!(entry.size, 1024);
         assert_eq!(entry.mtime, 1234567890);
@@ -379,16 +351,15 @@ mod tests {
 
     #[test]
     fn test_cache_entry_validity() {
-        let entry = CacheEntry::new(
-            12345,
-            PathBuf::from("/test/file"),
-            1024,
-            1234567890,
-            2,
-            Some(42),
-            Some(1000),
-            EntryType::File,
-        );
+        let entry = CacheEntry::new(CacheEntryParams {
+            path: PathBuf::from("/test/file"),
+            size: 1024,
+            mtime: 1234567890,
+            nlink: 2,
+            inode_cnt: Some(42),
+            owner: Some(1000),
+            entry_type: EntryType::File,
+        });
 
         // Valid case
         assert!(entry.is_valid(1234567890, 2));
@@ -406,27 +377,27 @@ mod tests {
         assert!(cache.is_empty());
         assert_eq!(cache.len(), 0);
 
-        let entry = CacheEntry::new(
-            12345,
-            PathBuf::from("/test/file"),
-            1024,
-            1234567890,
-            2,
-            Some(42),
-            Some(1000),
-            EntryType::File,
-        );
+        let entry = CacheEntry::new(CacheEntryParams {
+            path: PathBuf::from("/test/file"),
+            size: 1024,
+            mtime: 1234567890,
+            nlink: 2,
+            inode_cnt: Some(42),
+            owner: Some(1000),
+            entry_type: EntryType::File,
+        });
 
         cache.add_entry(entry.clone());
 
         assert!(!cache.is_empty());
         assert_eq!(cache.len(), 1);
 
-        let retrieved = cache.get_entry(12345);
+        let path_key = calculate_path_hash(&PathBuf::from("/test/file"));
+        let retrieved = cache.get_entry(path_key);
         assert!(retrieved.is_some());
         assert_eq!(retrieved.unwrap().size, 1024);
 
-        let missing = cache.get_entry(54321);
+        let missing = cache.get_entry(0xdeadbeef);
         assert!(missing.is_none());
     }
 
@@ -439,16 +410,16 @@ mod tests {
         let root = PathBuf::from("/test/root");
         let mut cache = Cache::new(root);
 
-        let entry = CacheEntry::new(
-            12345,
-            PathBuf::from("/test/file"),
-            1024,
-            1234567890,
-            2,
-            Some(42),
-            Some(1000),
-            EntryType::File,
-        );
+        let entry = CacheEntry::new(CacheEntryParams {
+            path: PathBuf::from("/test/file"),
+            size: 1024,
+            mtime: 1234567890,
+            nlink: 2,
+            inode_cnt: Some(42),
+            owner: Some(1000),
+            entry_type: EntryType::File,
+        });
+        let entry_hash = entry.path_hash;
         cache.add_entry(entry);
 
         // Save to file
@@ -462,7 +433,7 @@ mod tests {
         assert_eq!(loaded_cache.header.rudu_version, cache.header.rudu_version);
         assert_eq!(loaded_cache.len(), cache.len());
 
-        let loaded_entry = loaded_cache.get_entry(12345).unwrap();
+        let loaded_entry = loaded_cache.get_entry(entry_hash).unwrap();
         assert_eq!(loaded_entry.size, 1024);
         assert_eq!(loaded_entry.mtime, 1234567890);
         assert_eq!(loaded_entry.entry_type, EntryType::File);
@@ -485,10 +456,11 @@ mod tests {
     #[test]
     fn test_cache_path_generation() {
         let temp_dir = tempdir().unwrap();
-        let cache_path = Cache::get_cache_path(temp_dir.path()).unwrap();
+        let cache_path = Cache::get_cache_path_without_write_test(temp_dir.path()).unwrap();
 
-        // Should prefer the primary location since temp dir is writable
-        assert_eq!(cache_path, temp_dir.path().join(".rudu-cache.bin"));
+        // Always uses XDG/configurable cache dir — never writes into the scanned directory
+        assert!(cache_path.ends_with(".bin"));
+        assert!(!cache_path.starts_with(temp_dir.path()));
     }
 
     #[test]

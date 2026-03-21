@@ -65,21 +65,22 @@ Save cache to disk using efficient serialization with memory-mapped IO.
 ### Basic Usage
 
 ```rust
-use rudu::cache::{load_cache, save_cache, CacheEntry};
+use rudu::cache::{load_cache, save_cache, CacheEntry, CacheEntryParams};
 use rudu::data::EntryType;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
 // Create cache
 let mut cache = HashMap::new();
-let entry = CacheEntry::new(
-    12345,
-    1024,
-    1234567890,
-    Some(1),
-    Some(1000),
-    EntryType::File,
-);
+let entry = CacheEntry::new(CacheEntryParams {
+    path: PathBuf::from("file.txt"),
+    size: 1024,
+    mtime: 1234567890,
+    nlink: 1,
+    inode_cnt: Some(1),
+    owner: Some(1000),
+    entry_type: EntryType::File,
+});
 cache.insert(PathBuf::from("file.txt"), entry);
 
 // Save cache
@@ -97,9 +98,18 @@ if let Some(loaded_cache) = load_cache(&root) {
 ```rust
 // Create large cache
 let mut large_cache = HashMap::new();
-for i in 0..100000 {
-    let entry = CacheEntry::new(i, i * 1024, 1234567890 + i, Some(1), Some(1000), EntryType::File);
-    large_cache.insert(PathBuf::from(format!("file_{}.txt", i)), entry);
+for i in 0u64..100000 {
+    let path = PathBuf::from(format!("file_{}.txt", i));
+    let entry = CacheEntry::new(CacheEntryParams {
+        path: path.clone(),
+        size: i * 1024,
+        mtime: 1234567890 + i,
+        nlink: 1,
+        inode_cnt: Some(1),
+        owner: Some(1000),
+        entry_type: EntryType::File,
+    });
+    large_cache.insert(path, entry);
 }
 
 // Save and measure performance

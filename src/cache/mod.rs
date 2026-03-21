@@ -27,7 +27,7 @@ static FILE_LOCK: Lazy<parking_lot::Mutex<()>> = Lazy::new(|| parking_lot::Mutex
 // Global cache enabled flag - can be disabled dynamically when nearing memory limits
 static CACHE_ENABLED: AtomicBool = AtomicBool::new(true);
 
-pub use model::{CacheEntry, CacheHeader};
+pub use model::{CacheEntry, CacheEntryParams, CacheHeader};
 
 /// Enable or disable caching dynamically
 ///
@@ -104,7 +104,7 @@ pub fn load_cache(root: &Path, ttl_seconds: u64) -> HashMap<PathBuf, CacheEntry>
         Ok(cache) => {
             // Check if cache should be invalidated
             if cache.header.should_invalidate(root, ttl_seconds) {
-                println!(
+                eprintln!(
                     "🗑️  Cache invalidated (version mismatch, TTL expired, or root mtime changed)"
                 );
                 // Optionally remove the invalidated cache file
@@ -425,16 +425,15 @@ mod cache_root_tests {
         let root_path = test_root_dir.path();
 
         let mut cache = HashMap::new();
-        let entry = CacheEntry::new(
-            12345,
-            PathBuf::from("test.txt"),
-            1024,
-            1234567890,
-            1,
-            Some(1),
-            Some(1000),
-            crate::data::EntryType::File,
-        );
+        let entry = CacheEntry::new(CacheEntryParams {
+            path: PathBuf::from("test.txt"),
+            size: 1024,
+            mtime: 1234567890,
+            nlink: 1,
+            inode_cnt: Some(1),
+            owner: Some(1000),
+            entry_type: crate::data::EntryType::File,
+        });
         cache.insert(PathBuf::from("test.txt"), entry);
 
         // Capture the root directory's mtime before saving to avoid cache invalidation
@@ -484,16 +483,15 @@ mod cache_root_tests {
 
         // Test that save_cache succeeds silently when disabled
         let mut test_cache = HashMap::new();
-        let entry = CacheEntry::new(
-            12345,
-            PathBuf::from("test.txt"),
-            1024,
-            1234567890,
-            1,
-            Some(1),
-            Some(1000),
-            crate::data::EntryType::File,
-        );
+        let entry = CacheEntry::new(CacheEntryParams {
+            path: PathBuf::from("test.txt"),
+            size: 1024,
+            mtime: 1234567890,
+            nlink: 1,
+            inode_cnt: Some(1),
+            owner: Some(1000),
+            entry_type: crate::data::EntryType::File,
+        });
         test_cache.insert(PathBuf::from("test.txt"), entry);
 
         let save_result = save_cache_with_mtime(&root_path, &test_cache, None);

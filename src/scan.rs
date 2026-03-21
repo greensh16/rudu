@@ -20,21 +20,84 @@
 //! - Single-pass processing reduces memory allocations and improves cache locality
 
 use crate::Args;
-use crate::cache::{CacheEntry, load_cache, save_cache_with_mtime};
+use crate::cache::{CacheEntry, CacheEntryParams, load_cache, save_cache_with_mtime};
 use crate::cli::SortKey;
 use crate::data::{EntryType, FileEntry};
 use crate::memory::MemoryMonitor;
 use crate::metrics::{PhaseResult, PhaseTimer};
-use crate::utils::{disk_usage, get_dir_metadata, get_owner, path_hash, sort_entries};
+use crate::utils::{disk_usage, get_dir_metadata, get_owner, path_depth, sort_entries};
 use anyhow::{Context, Result};
 use dashmap::DashMap;
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use walkdir::WalkDir;
+
+/// Recursively restores cached subdirectory entries for a directory cache hit.
+///
+/// Replaces the previous O(n) per-hit loop over all cache entries with an O(depth)
+/// descent through a pre-built parent→children index, reducing the overall
+/// subtree-restoration cost from O(n×k) to O(n) across all cache hits.
+#[allow(clippy::too_many_arguments)]
+fn restore_subtree(
+    root: &Path,
+    path: &Path,
+    children_index: &HashMap<PathBuf, Vec<PathBuf>>,
+    cache: &HashMap<PathBuf, CacheEntry>,
+    max_depth: Option<usize>,
+    exclude_matcher: &globset::GlobSet,
+    exclude_patterns: &[String],
+    dir_totals: &DashMap<PathBuf, u64>,
+    directory_children: &DashMap<PathBuf, u64>,
+    cached_dirs: &DashMap<PathBuf, CacheEntry>,
+    new_cache_entries: &mut HashMap<PathBuf, CacheEntry>,
+) {
+    let children = match children_index.get(path) {
+        Some(c) => c,
+        None => return,
+    };
+    for child_path in children {
+        let sub_depth = path_depth(root, child_path);
+        if !max_depth.map(|d| sub_depth <= d).unwrap_or(true) {
+            continue;
+        }
+        if exclude_matcher.is_match(child_path) {
+            continue;
+        }
+        if child_path.components().any(|c| {
+            exclude_patterns
+                .iter()
+                .any(|x| c.as_os_str() == OsStr::new(x))
+        }) {
+            continue;
+        }
+        if let Some(cached_subentry) = cache.get(child_path) {
+            cached_dirs.insert(child_path.clone(), cached_subentry.clone());
+            new_cache_entries.insert(child_path.clone(), cached_subentry.clone());
+            dir_totals.insert(child_path.clone(), cached_subentry.size);
+            if let Some(inode_count) = cached_subentry.inode_cnt {
+                directory_children.insert(child_path.clone(), inode_count);
+            }
+            restore_subtree(
+                root,
+                child_path,
+                children_index,
+                cache,
+                max_depth,
+                exclude_matcher,
+                exclude_patterns,
+                dir_totals,
+                directory_children,
+                cached_dirs,
+                new_cache_entries,
+            );
+        }
+    }
+}
 
 /// Memory limit status for scanning operations
 #[derive(Debug, Clone, PartialEq)]
@@ -81,39 +144,23 @@ struct ScanJob {
     parent_paths: Vec<PathBuf>,
 }
 
-/// Execute a closure with a local thread pool if threads are specified, otherwise use global pool
-fn with_thread_pool<F, R>(args: &Args, f: F) -> Result<R>
-where
-    F: FnOnce() -> R + Send,
-    R: Send,
-{
-    if let Some(n_threads) = args.threads {
-        // Use local thread pool to avoid global contention
-        let builder = rayon::ThreadPoolBuilder::new().num_threads(n_threads);
 
-        // For work-stealing with uneven trees, we'll handle the optimization in the scan function
-        // The main work-stealing logic is implemented in scan_with_work_stealing()
-
-        let pool = builder
-            .build()
-            .context("Failed to create local thread pool")?;
-
-        Ok(pool.install(f))
-    } else {
-        // Use global thread pool
-        Ok(f())
-    }
-}
-
-/// Scans a directory using work-stealing for large subdirectories
+/// Scans a directory using work-stealing for large subdirectories.
+///
+/// Fixes applied vs the original:
+/// - Single WalkDir traversal: `walker_entries` is collected once and reused for both
+///   the accumulation phase and the FileEntry construction phase.
+/// - Single `disk_usage` call per file: sizes are stored in `file_sizes` during the
+///   accumulation scope and read back when building FileEntry objects, so each file is
+///   only stat'd once.
+/// - The rayon scope is used exclusively for accumulation; FileEntry construction runs
+///   after the scope exits (guaranteeing all accumulation tasks are complete).
 fn scan_with_work_stealing(
     root: &Path,
     args: &Args,
     exclude_matcher: &globset::GlobSet,
     sort_key: SortKey,
 ) -> Result<ScanResult> {
-    use rayon::prelude::*;
-
     let pb = ProgressBar::new_spinner();
     pb.set_style(
         ProgressStyle::default_spinner()
@@ -123,85 +170,84 @@ fn scan_with_work_stealing(
     );
     pb.enable_steady_tick(Duration::from_millis(100));
 
+    // Single WalkDir pass — reused for both accumulation and FileEntry creation.
+    let walker_entries: Vec<walkdir::DirEntry> = WalkDir::new(root)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|e| {
+            !exclude_matcher.is_match(e.path())
+                && !e
+                    .path()
+                    .components()
+                    .any(|c| args.exclude.iter().any(|x| c.as_os_str() == OsStr::new(x)))
+        })
+        .filter_map(|e| {
+            pb.tick();
+            e.ok()
+        })
+        .collect();
+
+    // Group entries by their immediate parent to identify large directories.
+    let mut dir_entry_counts: HashMap<PathBuf, usize> = HashMap::new();
+    for entry in &walker_entries {
+        if let Some(parent) = entry.path().parent() {
+            *dir_entry_counts.entry(parent.to_path_buf()).or_insert(0) += 1;
+        }
+    }
+
+    // Collect the set of large-directory paths (> 10,000 direct children).
+    let large_dirs: std::collections::HashSet<PathBuf> = dir_entry_counts
+        .iter()
+        .filter(|(_, count)| **count > 10_000)
+        .map(|(path, _)| path.clone())
+        .collect();
+
+    eprintln!(
+        "🔍 Found {} large directories (>10k entries) to process with work-stealing",
+        large_dirs.len()
+    );
+
+    // Accumulation maps — populated during the scope, read after it exits.
     let dir_totals: DashMap<PathBuf, u64> = DashMap::new();
     let directory_children: DashMap<PathBuf, u64> = DashMap::new();
+    // Per-file sizes stored here so we never call disk_usage twice for the same file.
+    let file_sizes: DashMap<PathBuf, u64> = DashMap::new();
 
-    // Use scope to spawn tasks for large directories
-    let all_entries: Vec<FileEntry> = rayon::scope(|scope| {
-        // First pass: collect all entries and identify large directories
-        let walker_entries: Vec<_> = WalkDir::new(root)
-            .follow_links(false)
-            .into_iter()
-            .filter_entry(|e| {
-                !exclude_matcher.is_match(e.path())
-                    && !e
-                        .path()
-                        .components()
-                        .any(|c| args.exclude.iter().any(|x| c.as_os_str() == OsStr::new(x)))
-            })
-            .filter_map(|e| {
-                pb.tick();
-                e.ok()
-            })
-            .collect();
-
-        // Group entries by their parent directory to count entries per directory
-        let mut dir_entry_counts: std::collections::HashMap<PathBuf, usize> =
-            std::collections::HashMap::new();
-        for entry in &walker_entries {
-            if let Some(parent) = entry.path().parent() {
-                *dir_entry_counts.entry(parent.to_path_buf()).or_insert(0) += 1;
-            }
-        }
-
-        // Identify large directories (> 10,000 entries)
-        let large_dirs: Vec<_> = dir_entry_counts
-            .iter()
-            .filter(|&(_, count)| *count > 10_000)
-            .map(|(path, _)| path.clone())
-            .collect();
-
-        println!(
-            "🔍 Found {} large directories (>10k entries) to process with work-stealing",
-            large_dirs.len()
-        );
-
-        // Process large directories as separate tasks
-        for large_dir in large_dirs {
-            let large_dir_entries: Vec<_> = walker_entries
+    // Accumulation phase: the scope guarantees all spawned tasks complete before we
+    // proceed to FileEntry construction, so dir_totals / file_sizes are fully populated.
+    rayon::scope(|scope| {
+        // Spawn a task per large directory so its entries are processed in parallel
+        // with the "remaining" par_iter below, using rayon's work-stealing scheduler.
+        for large_dir in &large_dirs {
+            let large_dir_entries: Vec<walkdir::DirEntry> = walker_entries
                 .iter()
-                .filter(|e| e.path().parent() == Some(&large_dir))
+                .filter(|e| e.path().parent() == Some(large_dir.as_path()))
                 .cloned()
                 .collect();
 
             let dir_totals_ref = &dir_totals;
+            let file_sizes_ref = &file_sizes;
             let directory_children_ref = &directory_children;
             let args_ref = args;
 
             scope.spawn(move |_| {
-                // Process this large directory in a separate task
                 large_dir_entries.par_iter().for_each(|entry| {
                     let path = entry.path().to_path_buf();
-                    let is_file = entry.file_type().is_file();
-
-                    if is_file {
+                    if entry.file_type().is_file() {
                         let size = disk_usage(&path);
-
-                        // Accumulate in parent directories
-                        let mut current = path.parent();
-                        while let Some(parent_path) = current {
+                        file_sizes_ref.insert(path.clone(), size);
+                        let mut cur = path.parent();
+                        while let Some(p) = cur {
                             dir_totals_ref
-                                .entry(parent_path.to_path_buf())
+                                .entry(p.to_path_buf())
                                 .and_modify(|v| *v += size)
                                 .or_insert(size);
-                            if parent_path == root {
+                            if p == root {
                                 break;
                             }
-                            current = parent_path.parent();
+                            cur = p.parent();
                         }
                     }
-
-                    // Count for inode tracking
                     if args_ref.show_inodes {
                         if let Some(parent) = path.parent() {
                             *directory_children_ref
@@ -213,113 +259,87 @@ fn scan_with_work_stealing(
             });
         }
 
-        // Process remaining entries normally
-        let remaining_entries: Vec<_> = walker_entries
-            .into_iter()
-            .filter(|e| {
-                if let Some(parent) = e.path().parent() {
-                    dir_entry_counts
-                        .get(parent)
-                        .is_none_or(|count| *count <= 10_000)
-                } else {
-                    true
-                }
-            })
-            .collect();
-
-        // Process remaining entries in parallel
-        remaining_entries.par_iter().for_each(|entry| {
-            let path = entry.path().to_path_buf();
-            let is_file = entry.file_type().is_file();
-
-            if is_file {
-                let size = disk_usage(&path);
-
-                // Accumulate in parent directories
-                let mut current = path.parent();
-                while let Some(parent_path) = current {
-                    dir_totals
-                        .entry(parent_path.to_path_buf())
-                        .and_modify(|v| *v += size)
-                        .or_insert(size);
-                    if parent_path == root {
-                        break;
-                    }
-                    current = parent_path.parent();
-                }
-            }
-
-            // Count for inode tracking
-            if args.show_inodes {
-                if let Some(parent) = path.parent() {
-                    *directory_children.entry(parent.to_path_buf()).or_insert(0) += 1;
-                }
-            }
-        });
-
-        // Create FileEntry objects for all entries
-        let all_walker_entries: Vec<_> = WalkDir::new(root)
-            .follow_links(false)
-            .into_iter()
-            .filter_entry(|e| {
-                !exclude_matcher.is_match(e.path())
-                    && !e
-                        .path()
-                        .components()
-                        .any(|c| args.exclude.iter().any(|x| c.as_os_str() == OsStr::new(x)))
-            })
-            .filter_map(|e| e.ok())
-            .collect();
-
-        all_walker_entries
+        // Process the remaining entries (those not in large directories) in parallel.
+        // This runs concurrently with the scope.spawn'd tasks above via work-stealing.
+        walker_entries
             .par_iter()
-            .map(|entry| {
+            .filter(|e| {
+                e.path()
+                    .parent()
+                    .map(|p| !large_dirs.contains(p))
+                    .unwrap_or(true)
+            })
+            .for_each(|entry| {
                 let path = entry.path().to_path_buf();
-                let is_file = entry.file_type().is_file();
-
-                if is_file {
-                    FileEntry {
-                        path: path.clone(),
-                        size: disk_usage(&path),
-                        owner: if args.show_owner {
-                            get_owner(&path)
-                        } else {
-                            None
-                        },
-                        inodes: None,
-                        entry_type: crate::data::EntryType::File,
-                    }
-                } else {
-                    let size = dir_totals.get(&path).map(|v| *v).unwrap_or(0);
-                    let inode_count = if args.show_inodes {
-                        directory_children.get(&path).map(|v| *v).unwrap_or(0)
-                    } else {
-                        0
-                    };
-
-                    FileEntry {
-                        path: path.clone(),
-                        size,
-                        owner: if args.show_owner {
-                            get_owner(&path)
-                        } else {
-                            None
-                        },
-                        inodes: if args.show_inodes {
-                            Some(inode_count)
-                        } else {
-                            None
-                        },
-                        entry_type: crate::data::EntryType::Dir,
+                if entry.file_type().is_file() {
+                    let size = disk_usage(&path);
+                    file_sizes.insert(path.clone(), size);
+                    let mut cur = path.parent();
+                    while let Some(p) = cur {
+                        dir_totals
+                            .entry(p.to_path_buf())
+                            .and_modify(|v| *v += size)
+                            .or_insert(size);
+                        if p == root {
+                            break;
+                        }
+                        cur = p.parent();
                     }
                 }
-            })
-            .collect()
+                if args.show_inodes {
+                    if let Some(parent) = path.parent() {
+                        *directory_children.entry(parent.to_path_buf()).or_insert(0) += 1;
+                    }
+                }
+            });
     });
 
     pb.finish_with_message("Work-stealing scan complete");
 
-    let mut final_entries = all_entries;
+    // Build FileEntry objects from the already-collected walker_entries.
+    // Sizes come from file_sizes (populated above) — no second disk_usage call.
+    let mut final_entries: Vec<FileEntry> = walker_entries
+        .par_iter()
+        .map(|entry| {
+            let path = entry.path().to_path_buf();
+            if entry.file_type().is_file() {
+                FileEntry {
+                    path: path.clone(),
+                    size: file_sizes.get(&path).map(|v| *v).unwrap_or(0),
+                    owner: if args.show_owner {
+                        get_owner(&path)
+                    } else {
+                        None
+                    },
+                    inodes: None,
+                    entry_type: EntryType::File,
+                }
+            } else {
+                let size = dir_totals.get(&path).map(|v| *v).unwrap_or(0);
+                let inode_count = if args.show_inodes {
+                    directory_children.get(&path).map(|v| *v).unwrap_or(0)
+                } else {
+                    0
+                };
+                FileEntry {
+                    path: path.clone(),
+                    size,
+                    owner: if args.show_owner {
+                        get_owner(&path)
+                    } else {
+                        None
+                    },
+                    inodes: if args.show_inodes {
+                        Some(inode_count)
+                    } else {
+                        None
+                    },
+                    entry_type: EntryType::Dir,
+                }
+            }
+        })
+        .collect();
+
     sort_entries(&mut final_entries, sort_key);
 
     Ok(ScanResult {
@@ -369,177 +389,6 @@ pub fn scan_files_and_dirs(
 
     // Use incremental scanning by default (unless work-stealing is selected)
     scan_files_and_dirs_incremental(root, args, exclude_matcher, sort_key)
-}
-
-/// Legacy scanning function (kept for reference)
-#[allow(dead_code)]
-fn scan_files_and_dirs_legacy(
-    root: &Path,
-    args: &Args,
-    exclude_matcher: &globset::GlobSet,
-    sort_key: SortKey,
-) -> Result<ScanResult> {
-    // Setup a spinner to indicate scanning progress in the terminal
-    let pb = ProgressBar::new_spinner();
-    pb.set_style(
-        ProgressStyle::default_spinner()
-            .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"])
-            .template("{spinner} Scanning files... [{elapsed}]")
-            .context("Failed to set progress template")?,
-    );
-    pb.enable_steady_tick(Duration::from_millis(100));
-
-    // Thread-safe maps for directory totals and inode counts
-    let dir_totals: DashMap<PathBuf, u64> = DashMap::new();
-
-    // Create a channel for the optimized pipeline
-    let (tx, rx) = mpsc::channel::<ScanJob>();
-
-    // Pre-compute parent paths function
-    let get_parent_paths = |path: &Path| -> Vec<PathBuf> {
-        let mut parents = Vec::new();
-        let mut current = path.parent();
-        while let Some(parent_path) = current {
-            parents.push(parent_path.to_path_buf());
-            if parent_path == root {
-                break;
-            }
-            current = parent_path.parent();
-        }
-        parents
-    };
-
-    // Use local thread pool for parallel processing if specified
-    let scan_jobs: Vec<ScanJob> = with_thread_pool(args, || {
-        // Optimized WalkDir -> channel -> parallel consumer pipeline
-        WalkDir::new(root)
-            .follow_links(false)
-            .into_iter()
-            .filter_entry(|e| {
-                !exclude_matcher.is_match(e.path())
-                    && !e
-                        .path()
-                        .components()
-                        .any(|c| args.exclude.iter().any(|x| c.as_os_str() == OsStr::new(x)))
-            })
-            .filter_map(|e| {
-                pb.tick();
-                e.ok()
-            })
-            .par_bridge()
-            .for_each_with(tx, |s, entry| {
-                let path = entry.path().to_path_buf();
-                let is_file = entry.file_type().is_file();
-                let size = if is_file { disk_usage(&path) } else { 0 };
-                let parent_paths = if is_file {
-                    get_parent_paths(&path)
-                } else {
-                    Vec::new()
-                };
-
-                let job = ScanJob {
-                    path,
-                    is_file,
-                    size,
-                    parent_paths,
-                };
-
-                // Handle channel send failure gracefully instead of panicking
-                if s.send(job).is_err() {
-                    // Channel receiver dropped, stop processing
-                }
-            });
-
-        // Collect all scan jobs from the channel
-        rx.into_iter().collect()
-    })?;
-
-    pb.finish_with_message("Scan complete");
-
-    // Pre-compute inode counts for directories during initial processing
-    // This is more efficient than doing separate walkdir calls later
-    let directory_children: DashMap<PathBuf, u64> = DashMap::new();
-
-    // Accumulate directory sizes from file scan jobs
-    for job in &scan_jobs {
-        if job.is_file {
-            // Accumulate size in parent directories
-            for parent_path in &job.parent_paths {
-                dir_totals
-                    .entry(parent_path.clone())
-                    .and_modify(|v| *v += job.size)
-                    .or_insert(job.size);
-            }
-        }
-    }
-
-    if args.show_inodes {
-        // Count direct children for each directory
-        for job in &scan_jobs {
-            if let Some(parent) = job.path.parent() {
-                *directory_children.entry(parent.to_path_buf()).or_insert(0) += 1;
-            }
-        }
-    }
-
-    // Process all scan jobs in parallel to create FileEntry objects
-    let mut all_entries: Vec<FileEntry> = with_thread_pool(args, || {
-        scan_jobs
-            .par_iter()
-            .map(|job| {
-                if job.is_file {
-                    FileEntry {
-                        path: job.path.clone(),
-                        size: job.size,
-                        owner: if args.show_owner {
-                            get_owner(&job.path)
-                        } else {
-                            None
-                        },
-                        inodes: None, // Files don't have inode counts
-                        entry_type: EntryType::File,
-                    }
-                } else {
-                    let size = dir_totals.get(&job.path).map(|v| *v).unwrap_or(0);
-
-                    // Use pre-computed inode count from our single-pass scan
-                    let inode_count = if args.show_inodes {
-                        directory_children.get(&job.path).map(|v| *v).unwrap_or(0)
-                    } else {
-                        0
-                    };
-
-                    FileEntry {
-                        path: job.path.clone(),
-                        size,
-                        owner: if args.show_owner {
-                            get_owner(&job.path)
-                        } else {
-                            None
-                        },
-                        inodes: if args.show_inodes {
-                            Some(inode_count)
-                        } else {
-                            None
-                        },
-                        entry_type: EntryType::Dir,
-                    }
-                }
-            })
-            .collect()
-    })?;
-
-    // Sort the entries based on selected criteria
-    sort_entries(&mut all_entries, sort_key);
-
-    Ok(ScanResult {
-        entries: all_entries,
-        cache_hits: 0,
-        cache_total: 0,
-        memory_limit_hit: false,
-        phase_timings: Vec::new(),
-        memory_status: MemoryLimitStatus::Normal,
-    })
 }
 
 /// Scan files and directories with memory monitoring support
@@ -605,13 +454,13 @@ fn scan_files_and_dirs_with_monitor(
     // Cache loading phase
     let cache_timer = PhaseTimer::new("Cache-load");
     let cache = if args.no_cache {
-        println!("Cache disabled, performing full scan");
+        eprintln!("Cache disabled, performing full scan");
         std::collections::HashMap::new()
     } else {
         {
             let cache = load_cache(root, args.cache_ttl);
             if cache.is_empty() {
-                println!("📦 No cache found, performing full scan");
+                eprintln!("📦 No cache found, performing full scan");
             }
             cache
         }
@@ -653,6 +502,18 @@ fn scan_files_and_dirs_with_monitor(
     // WalkDir phase
     let walkdir_timer = PhaseTimer::new("WalkDir");
 
+    // Pre-build parent → children index so that subtree restoration on a cache hit is O(n)
+    // overall rather than O(n×k) (iterating all cache entries for each hit).
+    let mut children_index: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
+    for cached_path in cache.keys() {
+        if let Some(parent) = cached_path.parent() {
+            children_index
+                .entry(parent.to_path_buf())
+                .or_default()
+                .push(cached_path.clone());
+        }
+    }
+
     let walker_iter = WalkDir::new(root)
         .follow_links(false)
         .into_iter()
@@ -691,42 +552,21 @@ fn scan_files_and_dirs_with_monitor(
                             // Add to new cache (preserving valid entries)
                             new_cache_entries.insert(path.to_path_buf(), cached_entry.clone());
 
-                            // Also restore any cached subdirectories within this subtree
-                            // that would be visible given the depth constraints and current exclusion patterns
-                            for (cached_path, cached_subentry) in cache.iter() {
-                                // Check if this is a subdirectory of the current path
-                                if cached_path.starts_with(path) && cached_path != path {
-                                    let sub_depth = crate::utils::path_depth(root, cached_path);
-
-                                    // Apply current exclusion patterns to cached entries
-                                    let excluded_by_glob = exclude_matcher.is_match(cached_path);
-                                    let excluded_by_component = cached_path.components().any(|c| {
-                                        args.exclude.iter().any(|x| c.as_os_str() == OsStr::new(x))
-                                    });
-
-                                    // Only include subdirectories that pass all filters
-                                    let should_include = match args.depth {
-                                        Some(max_depth) => sub_depth <= max_depth,
-                                        None => true,
-                                    } && !excluded_by_glob
-                                        && !excluded_by_component;
-
-                                    if should_include {
-                                        cached_dirs
-                                            .insert(cached_path.clone(), cached_subentry.clone());
-                                        new_cache_entries
-                                            .insert(cached_path.clone(), cached_subentry.clone());
-
-                                        // Also restore the size and inode data for subdirectories
-                                        dir_totals
-                                            .insert(cached_path.clone(), cached_subentry.size);
-                                        if let Some(inode_count) = cached_subentry.inode_cnt {
-                                            directory_children
-                                                .insert(cached_path.clone(), inode_count);
-                                        }
-                                    }
-                                }
-                            }
+                            // Restore cached subdirectory entries using the pre-built
+                            // children_index for O(n) overall cost instead of O(n×k).
+                            restore_subtree(
+                                root,
+                                path,
+                                &children_index,
+                                &cache,
+                                args.depth,
+                                exclude_matcher,
+                                &args.exclude,
+                                &dir_totals,
+                                &directory_children,
+                                &cached_dirs,
+                                &mut new_cache_entries,
+                            );
 
                             pb.tick();
                             return false; // Skip walking into this subtree
@@ -752,11 +592,11 @@ fn scan_files_and_dirs_with_monitor(
             if let Some(ref monitor) = monitor {
                 if let Ok(mut mem_monitor) = monitor.lock() {
                     if mem_monitor.exceeds_limit() {
-                        println!("⚠️  Memory limit exceeded, terminating scan early");
+                        eprintln!("⚠️  Memory limit exceeded, terminating scan early");
                         memory_exceeded = true;
                         break;
                     } else if !memory_nearing_limit && mem_monitor.nearing_limit() {
-                        println!(
+                        eprintln!(
                             "⚠️  Memory usage nearing limit, disabling cache and heavy features"
                         );
                         memory_nearing_limit = true;
@@ -857,20 +697,19 @@ fn scan_files_and_dirs_with_monitor(
 
                 // Create cache entry for this directory
                 let cache_entry = get_dir_metadata(&job.path).map(|metadata| {
-                    CacheEntry::new(
-                        path_hash(&job.path),
-                        job.path.clone(),
+                    CacheEntry::new(CacheEntryParams {
+                        path: job.path.clone(),
                         size,
-                        metadata.mtime,
-                        metadata.nlink,
-                        if args.show_inodes {
+                        mtime: metadata.mtime,
+                        nlink: metadata.nlink,
+                        inode_cnt: if args.show_inodes {
                             Some(inode_count)
                         } else {
                             None
                         },
-                        metadata.owner,
-                        EntryType::Dir,
-                    )
+                        owner: metadata.owner,
+                        entry_type: EntryType::Dir,
+                    })
                 });
 
                 let entry = FileEntry {
@@ -939,7 +778,7 @@ fn scan_files_and_dirs_with_monitor(
     let hits = cache_hits.load(std::sync::atomic::Ordering::Relaxed);
     let misses = cache_misses.load(std::sync::atomic::Ordering::Relaxed);
     if hits > 0 || misses > 0 {
-        println!(
+        eprintln!(
             "📊 Cache stats: {} hits, {} misses ({}% hit rate)",
             hits,
             misses,
@@ -956,10 +795,10 @@ fn scan_files_and_dirs_with_monitor(
         if let Err(e) = save_cache_with_mtime(root, &new_cache_entries, root_mtime) {
             eprintln!("Failed to save cache: {}", e);
         } else {
-            println!("Cache updated with {} entries", new_cache_entries.len());
+            eprintln!("Cache updated with {} entries", new_cache_entries.len());
         }
     } else if memory_nearing_limit {
-        println!("⚠️  Cache saving disabled due to memory constraints");
+        eprintln!("⚠️  Cache saving disabled due to memory constraints");
     }
 
     // Sort and return results

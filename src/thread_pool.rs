@@ -62,7 +62,7 @@ pub fn configure_pool(strategy: ThreadPoolStrategy, n_threads: usize) -> Result<
         ThreadPoolStrategy::Default => {
             // Use Rayon's default configuration
             let default_threads = num_cpus::get();
-            println!(
+            eprintln!(
                 "🔧 Using default thread pool strategy ({} threads)",
                 default_threads
             );
@@ -94,7 +94,7 @@ pub fn configure_pool(strategy: ThreadPoolStrategy, n_threads: usize) -> Result<
         .build_global()
         .context("Failed to configure thread pool")?;
 
-    println!(
+    eprintln!(
         "🔧 Using {} strategy with {} threads",
         strategy.as_str(),
         actual_threads

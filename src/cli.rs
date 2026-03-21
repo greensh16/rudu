@@ -27,7 +27,7 @@ use std::path::PathBuf;
 /// for controlling the behavior of the file system scan and output formatting.
 /// ```
 #[derive(Parser, Debug, Clone)]
-#[command(name = "rudu", author = "Sam Green", version = "1.4.0", about)]
+#[command(name = "rudu", author = "Sam Green", version = env!("CARGO_PKG_VERSION"), about)]
 pub struct Args {
     /// Path to scan (defaults to current directory)
     #[arg(default_value = ".")]
