@@ -14,9 +14,23 @@ pub fn safe_lock<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|poison| poison.into_inner())
 }
 
-/// A guard struct to ensure proper test isolation by restoring environment state
+/// A guard struct to ensure proper test isolation by restoring environment state.
+///
+/// Holds TWO separate temp directories:
+/// - `cache_dir`: pointed to by `RUDU_CACHE_DIR`; cache `.bin` files are written here.
+/// - `root_dir`: exposed via `path()` and used as the "scanned root" in tests.
+///
+/// Keeping these separate means that writing a cache file (which updates `cache_dir`'s
+/// mtime) never touches `root_dir`'s mtime, so the mtime-based invalidation check
+/// in `should_invalidate` is always consistent between save and load.  Without this
+/// separation, tests that use the same directory for both roles fail on Linux CI because
+/// Linux filesystems track mtime with nanosecond precision: the write during `save_cache`
+/// bumps the directory mtime, causing `load_cache` to see a mismatch and return empty.
 struct TestCacheGuard {
-    temp_dir: tempfile::TempDir,
+    /// Where RUDU_CACHE_DIR points — cache files land here.
+    cache_dir: tempfile::TempDir,
+    /// The "scanned root" passed to save_cache / load_cache.
+    root_dir: tempfile::TempDir,
     original_rudu_cache_dir: Option<String>,
     original_xdg_cache_home: Option<String>,
     original_cache_enabled: bool,
@@ -24,27 +38,31 @@ struct TestCacheGuard {
 
 impl TestCacheGuard {
     fn new() -> std::io::Result<Self> {
-        let temp_dir = tempfile::tempdir()?;
+        let cache_dir = tempfile::tempdir()?;
+        let root_dir = tempfile::tempdir()?;
 
         // Store original values
         let original_rudu_cache_dir = std::env::var("RUDU_CACHE_DIR").ok();
         let original_xdg_cache_home = std::env::var("XDG_CACHE_HOME").ok();
         let original_cache_enabled = crate::cache::is_enabled();
 
-        // Set test environment
-        unsafe { std::env::set_var("RUDU_CACHE_DIR", temp_dir.path()) };
+        // Point RUDU_CACHE_DIR at the cache dir only — not at root_dir.
+        unsafe { std::env::set_var("RUDU_CACHE_DIR", cache_dir.path()) };
         crate::cache::set_enabled(true);
 
         Ok(TestCacheGuard {
-            temp_dir,
+            cache_dir,
+            root_dir,
             original_rudu_cache_dir,
             original_xdg_cache_home,
             original_cache_enabled,
         })
     }
 
+    /// The "scanned root" path to pass as `root` to save_cache / load_cache.
+    /// This directory is never written to by the cache layer, so its mtime is stable.
     fn path(&self) -> &std::path::Path {
-        self.temp_dir.path()
+        self.root_dir.path()
     }
 }
 
@@ -177,13 +195,11 @@ fn test_save_and_load_large_cache() {
         cache.insert(path, entry);
     }
 
-    // Get the current directory mtime and use it for cache to avoid mtime mismatch
-    let current_mtime = crate::cache::model::get_root_mtime(temp_dir.path());
+    // Save the cache.  Because RUDU_CACHE_DIR points to a separate directory from
+    // temp_dir.path() (the "root"), writing the .bin file does not change the root's
+    // mtime, so load_cache will not see a mtime mismatch and invalidate the cache.
+    save_cache(temp_dir.path(), &cache).unwrap();
 
-    // Save cache with the directory's actual mtime
-    save_cache_with_mtime(temp_dir.path(), &cache, current_mtime).unwrap();
-
-    // Load it back immediately before the directory mtime can change
     let loaded = load_cache(temp_dir.path(), 604800);
     assert_eq!(loaded.len(), 10000);
 
