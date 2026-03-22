@@ -5,6 +5,59 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.9] - 2026-03-22
+
+### Bug Fixes
+
+#### Test Reliability — Cache mtime Race on Linux CI
+- Fixed `test_save_and_load_large_cache` and all other cache tests failing on Linux CI (passing locally on macOS) due to a mtime race condition. `TestCacheGuard` previously used the same temp directory as both `RUDU_CACHE_DIR` and the scan root. Writing the cache `.bin` file updated the directory's mtime, causing `should_invalidate` to see a mismatch on reload. Linux filesystems track mtime with nanosecond precision so the race was always triggered there. Fixed by giving `TestCacheGuard` two separate temp directories — one for `RUDU_CACHE_DIR` (where cache files land) and one exposed as the scan root (never written to by the cache layer). This fix covers all ~15 tests in `cache/tests.rs` in a single change.
+
+#### Dead Code Compile Error (`with_thread_pool`)
+- Removed orphaned `with_thread_pool` function from `src/scan.rs` which became dead code after `scan_files_and_dirs_legacy` was deleted, causing a `-D dead-code` compile error.
+
+#### Test Compile Errors
+- `tests/utils.rs`: Removed import and deleted `test_filter_by_depth` test after `filter_by_depth` was deleted from `utils.rs`.
+- `tests/integration_tests.rs`: Replaced `filter_by_depth` call with inline `path_depth`-based filtering.
+- `tests/output_renderers.rs`: Added missing `root: &Path` third argument to `terminal::render` call; deleted duplicate `tests/output_render.rs`.
+- `examples/test_cache_disable_demo.rs`: Updated old 8-argument `CacheEntry::new(...)` call to use the `CacheEntryParams` struct constructor.
+- `tests/output_renderers.rs`: Fixed `args.output` type mismatch — `Args.output` is `Option<String>` not `Option<PathBuf>`.
+
+#### Failing Test: `test_cache_path_generation`
+- Fixed assertion `cache_path.ends_with(".bin")` in `src/cache/model.rs`. `Path::ends_with` checks path *components*, not string suffixes, so it always returned `false` for filenames like `a1b2c3d4.bin`. Changed to `cache_path.extension().and_then(|e| e.to_str()) == Some("bin")`.
+
+#### Failing Test: `test_csv_renderer_produces_expected_schema`
+- Fixed assertion `buf.contains("directory")` — `EntryType::as_str()` returns `"DIR"` (uppercase), not `"directory"`. Updated assertions to match `"DIR"` and `"FILE"`.
+
+#### `unsafe` env var mutations (Rust 1.81+)
+- Wrapped `std::env::set_var` and `std::env::remove_var` calls in `unsafe` blocks in `tests/integration_tests.rs` after these functions became `unsafe` in Rust 1.81.
+
+### Tests Added
+
+#### `tests/utils.rs`
+- `test_disk_usage_nonzero_for_real_file` — verifies `disk_usage` returns > 0 for a file with content.
+- `test_disk_usage_zero_for_missing_path` — verifies `disk_usage` returns 0 for a nonexistent path.
+- `test_path_hash_is_deterministic` — same path always produces the same FNV hash.
+- `test_path_hash_differs_for_different_paths` — distinct paths produce distinct hashes.
+- `test_get_dir_metadata_returns_some_for_real_dir` — checks `nlink >= 2`, plausible `mtime`, and `owner` is `Some`.
+- `test_get_dir_metadata_returns_none_for_missing_path` — returns `None` for a nonexistent path.
+- `test_sort_entries_size_ties_are_stable_by_relative_order` — equal-size entries preserve original order under stable sort.
+- `test_sort_entries_empty_slice_does_not_panic` — sorting an empty slice is a no-op.
+- `test_sort_entries_single_entry_unchanged` — single-entry slice is unchanged after sort.
+
+#### `tests/output_renderers.rs`
+- `test_csv_renderer_handles_none_owner_and_inodes` — entries with `owner: None` and `inodes: None` produce valid CSV rows without panicking.
+- `test_csv_renderer_writes_to_stdout_when_no_output_path` — `args.output = None` causes the renderer to write to stdout without error.
+
+#### `tests/integration_tests.rs`
+- `test_incremental_scan_returns_correct_entries` — smoke test that `scan_files_and_dirs_incremental` finds all expected directories and constrains all returned paths to within the scanned root.
+- `test_incremental_scan_second_run_uses_cache` — runs the scan twice on the same directory and asserts `cache_total > 0` on the second run, confirming the first run populated the cache.
+
+### Other Changes
+- Simplified `README.md`: removed exhaustive feature checklist and usage examples (now in `docs/basic-usage.md`); kept elevator pitch, quick-start block, feature bullets, doc index, benchmark table, installation, and contributing sections.
+- Added `ROADMAP.md` covering planned releases v1.5.0 through v2.0.0 in 0.1 steps.
+
+---
+
 ## [1.4.0] - 2025-08-18
 
 ### Major Features Added
@@ -376,6 +429,7 @@ Features planned for upcoming releases:
 - **Memory safety** through Rust
 - **Simple CLI interface**
 
+[1.4.9]: https://github.com/greensh16/rudu/compare/v1.4.0...v1.4.9
 [1.4.0]: https://github.com/greensh16/rudu/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/greensh16/rudu/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/greensh16/rudu/compare/v1.1.0...v1.2.0
