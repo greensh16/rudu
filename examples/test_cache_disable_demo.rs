@@ -13,16 +13,15 @@ fn main() {
 
     // Create some test cache entries
     let mut test_cache = HashMap::new();
-    let entry = rudu::cache::CacheEntry::new(
-        12345,
-        PathBuf::from("test_file.txt"),
-        1024,
-        1234567890,
-        1,
-        Some(1),
-        Some(1000),
-        rudu::data::EntryType::File,
-    );
+    let entry = rudu::cache::CacheEntry::new(rudu::cache::CacheEntryParams {
+        path: PathBuf::from("test_file.txt"),
+        size: 1024,
+        mtime: 1234567890,
+        nlink: 1,
+        inode_cnt: Some(1),
+        owner: Some(1000),
+        entry_type: rudu::data::EntryType::File,
+    });
     test_cache.insert(PathBuf::from("test_file.txt"), entry);
 
     // Test normal caching works

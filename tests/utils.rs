@@ -1,9 +1,11 @@
 use rudu::cli::SortKey;
 use rudu::data::{EntryType, FileEntry};
 use rudu::utils::{
-    build_exclude_matcher, expand_exclude_patterns, filter_by_depth, path_depth, sort_entries,
+    build_exclude_matcher, disk_usage, expand_exclude_patterns, get_dir_metadata, path_depth,
+    path_hash, sort_entries,
 };
 use std::path::PathBuf;
+use tempfile::TempDir;
 
 #[test]
 fn test_path_depth() {
@@ -16,46 +18,6 @@ fn test_path_depth() {
     assert_eq!(path_depth(&root, &root), 0);
 }
 
-#[test]
-fn test_filter_by_depth() {
-    let root = PathBuf::from("/home/user");
-    let entries = vec![
-        FileEntry {
-            path: PathBuf::from("/home/user/documents"),
-            size: 1024,
-            owner: Some("user".to_string()),
-            inodes: Some(5),
-            entry_type: EntryType::Dir,
-        },
-        FileEntry {
-            path: PathBuf::from("/home/user/documents/work"),
-            size: 2048,
-            owner: Some("user".to_string()),
-            inodes: Some(3),
-            entry_type: EntryType::Dir,
-        },
-        FileEntry {
-            path: PathBuf::from("/home/user/documents/work/file.txt"),
-            size: 512,
-            owner: Some("user".to_string()),
-            inodes: None,
-            entry_type: EntryType::File,
-        },
-    ];
-
-    // Test depth filtering for directories only
-    let filtered = filter_by_depth(&entries, &root, Some(1), false);
-    assert_eq!(filtered.len(), 1);
-    assert_eq!(filtered[0].path, PathBuf::from("/home/user/documents"));
-
-    // Test depth filtering including files
-    let filtered_with_files = filter_by_depth(&entries, &root, Some(2), true);
-    assert_eq!(filtered_with_files.len(), 2);
-
-    // Test no depth limit
-    let all_filtered = filter_by_depth(&entries, &root, None, true);
-    assert_eq!(all_filtered.len(), 3);
-}
 
 #[test]
 fn test_sort_entries() {
@@ -140,4 +102,116 @@ fn test_build_exclude_matcher_invalid_pattern() {
 
     let matcher = build_exclude_matcher(&patterns);
     assert!(matcher.is_err());
+}
+
+// ── disk_usage ────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_disk_usage_nonzero_for_real_file() {
+    let tmp = TempDir::new().unwrap();
+    let file_path = tmp.path().join("sample.txt");
+    // Write enough data that the OS allocates at least one block
+    std::fs::write(&file_path, "x".repeat(4096)).unwrap();
+    let usage = disk_usage(&file_path);
+    assert!(usage > 0, "disk_usage should be > 0 for a non-empty file, got {usage}");
+}
+
+#[test]
+fn test_disk_usage_zero_for_missing_path() {
+    let usage = disk_usage(std::path::Path::new("/nonexistent/path/that/cannot/exist"));
+    assert_eq!(usage, 0, "disk_usage should return 0 for a missing path");
+}
+
+// ── path_hash ─────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_path_hash_is_deterministic() {
+    let path = std::path::Path::new("/home/user/documents/report.txt");
+    assert_eq!(
+        path_hash(path),
+        path_hash(path),
+        "path_hash must return the same value for the same path"
+    );
+}
+
+#[test]
+fn test_path_hash_differs_for_different_paths() {
+    let a = std::path::Path::new("/home/user/a.txt");
+    let b = std::path::Path::new("/home/user/b.txt");
+    assert_ne!(
+        path_hash(a),
+        path_hash(b),
+        "path_hash should differ for distinct paths"
+    );
+}
+
+// ── get_dir_metadata ──────────────────────────────────────────────────────────
+
+#[test]
+fn test_get_dir_metadata_returns_some_for_real_dir() {
+    let tmp = TempDir::new().unwrap();
+    let meta = get_dir_metadata(tmp.path());
+    assert!(meta.is_some(), "get_dir_metadata should return Some for a real directory");
+    let meta = meta.unwrap();
+    // nlink must be at least 2 (the dir itself + ".")
+    assert!(meta.nlink >= 2, "nlink should be >= 2, got {}", meta.nlink);
+    // mtime must be a plausible Unix timestamp (> year 2000)
+    assert!(meta.mtime > 946_684_800, "mtime looks wrong: {}", meta.mtime);
+    // owner UID should be present
+    assert!(meta.owner.is_some(), "owner UID should be present for a tempdir");
+}
+
+#[test]
+fn test_get_dir_metadata_returns_none_for_missing_path() {
+    let meta = get_dir_metadata(std::path::Path::new("/no/such/directory/ever"));
+    assert!(meta.is_none(), "get_dir_metadata should return None for a missing path");
+}
+
+// ── sort_entries edge cases ───────────────────────────────────────────────────
+
+#[test]
+fn test_sort_entries_size_ties_are_stable_by_relative_order() {
+    // Two entries with identical sizes — relative order should not swap under
+    // a stable sort; we use `sort_by` so Rust guarantees stability.
+    let mut entries = vec![
+        FileEntry {
+            path: PathBuf::from("/first"),
+            size: 512,
+            owner: None,
+            inodes: None,
+            entry_type: EntryType::File,
+        },
+        FileEntry {
+            path: PathBuf::from("/second"),
+            size: 512,
+            owner: None,
+            inodes: None,
+            entry_type: EntryType::File,
+        },
+    ];
+    sort_entries(&mut entries, SortKey::Size);
+    // Both have the same size; stability means /first stays before /second
+    assert_eq!(entries[0].path, PathBuf::from("/first"));
+    assert_eq!(entries[1].path, PathBuf::from("/second"));
+}
+
+#[test]
+fn test_sort_entries_empty_slice_does_not_panic() {
+    let mut entries: Vec<FileEntry> = vec![];
+    sort_entries(&mut entries, SortKey::Name);
+    sort_entries(&mut entries, SortKey::Size);
+    // No assertions needed — reaching here without panic is the goal
+}
+
+#[test]
+fn test_sort_entries_single_entry_unchanged() {
+    let mut entries = vec![FileEntry {
+        path: PathBuf::from("/only"),
+        size: 1024,
+        owner: None,
+        inodes: None,
+        entry_type: EntryType::Dir,
+    }];
+    sort_entries(&mut entries, SortKey::Size);
+    assert_eq!(entries[0].path, PathBuf::from("/only"));
 }

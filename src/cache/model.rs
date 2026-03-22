@@ -459,7 +459,7 @@ mod tests {
         let cache_path = Cache::get_cache_path_without_write_test(temp_dir.path()).unwrap();
 
         // Always uses XDG/configurable cache dir — never writes into the scanned directory
-        assert!(cache_path.ends_with(".bin"));
+        assert_eq!(cache_path.extension().and_then(|e| e.to_str()), Some("bin"));
         assert!(!cache_path.starts_with(temp_dir.path()));
     }
 
