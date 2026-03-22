@@ -18,7 +18,6 @@ fn test_path_depth() {
     assert_eq!(path_depth(&root, &root), 0);
 }
 
-
 #[test]
 fn test_sort_entries() {
     let entries = vec![
@@ -113,7 +112,10 @@ fn test_disk_usage_nonzero_for_real_file() {
     // Write enough data that the OS allocates at least one block
     std::fs::write(&file_path, "x".repeat(4096)).unwrap();
     let usage = disk_usage(&file_path);
-    assert!(usage > 0, "disk_usage should be > 0 for a non-empty file, got {usage}");
+    assert!(
+        usage > 0,
+        "disk_usage should be > 0 for a non-empty file, got {usage}"
+    );
 }
 
 #[test]
@@ -151,20 +153,33 @@ fn test_path_hash_differs_for_different_paths() {
 fn test_get_dir_metadata_returns_some_for_real_dir() {
     let tmp = TempDir::new().unwrap();
     let meta = get_dir_metadata(tmp.path());
-    assert!(meta.is_some(), "get_dir_metadata should return Some for a real directory");
+    assert!(
+        meta.is_some(),
+        "get_dir_metadata should return Some for a real directory"
+    );
     let meta = meta.unwrap();
     // nlink must be at least 2 (the dir itself + ".")
     assert!(meta.nlink >= 2, "nlink should be >= 2, got {}", meta.nlink);
     // mtime must be a plausible Unix timestamp (> year 2000)
-    assert!(meta.mtime > 946_684_800, "mtime looks wrong: {}", meta.mtime);
+    assert!(
+        meta.mtime > 946_684_800,
+        "mtime looks wrong: {}",
+        meta.mtime
+    );
     // owner UID should be present
-    assert!(meta.owner.is_some(), "owner UID should be present for a tempdir");
+    assert!(
+        meta.owner.is_some(),
+        "owner UID should be present for a tempdir"
+    );
 }
 
 #[test]
 fn test_get_dir_metadata_returns_none_for_missing_path() {
     let meta = get_dir_metadata(std::path::Path::new("/no/such/directory/ever"));
-    assert!(meta.is_none(), "get_dir_metadata should return None for a missing path");
+    assert!(
+        meta.is_none(),
+        "get_dir_metadata should return None for a missing path"
+    );
 }
 
 // ── sort_entries edge cases ───────────────────────────────────────────────────

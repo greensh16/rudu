@@ -1,8 +1,10 @@
 use rudu::cli::{Args, SortKey};
-use rudu::memory::MemoryMonitor;
-use rudu::scan::{scan_files_and_dirs, scan_files_and_dirs_incremental, scan_files_and_dirs_with_memory_monitor};
-use rudu::thread_pool::ThreadPoolStrategy;
 use rudu::data::EntryType;
+use rudu::memory::MemoryMonitor;
+use rudu::scan::{
+    scan_files_and_dirs, scan_files_and_dirs_incremental, scan_files_and_dirs_with_memory_monitor,
+};
+use rudu::thread_pool::ThreadPoolStrategy;
 use rudu::utils::{build_exclude_matcher, expand_exclude_patterns, path_depth};
 use std::fs;
 use std::sync::{Arc, Mutex};
@@ -288,8 +290,8 @@ fn test_size_calculation_with_tempdir() {
     // Create test files with clearly different disk usage.
     // Using a 16x size ratio (4 KB vs 64 KB) ensures file2 occupies more blocks than file1
     // even on filesystems with large minimum block sizes (e.g. APFS 4 KB blocks).
-    let file1_content = "a".repeat(4 * 1024);   // 4 KB
-    let file2_content = "b".repeat(64 * 1024);  // 64 KB
+    let file1_content = "a".repeat(4 * 1024); // 4 KB
+    let file2_content = "b".repeat(64 * 1024); // 64 KB
 
     fs::write(root_path.join("file1.txt"), &file1_content).expect("Failed to write file1");
     fs::write(root_path.join("file2.txt"), &file2_content).expect("Failed to write file2");
@@ -401,16 +403,25 @@ fn test_memory_limit_with_small_temp_dir() {
     // Primary goal: verify the scan completes without panicking regardless of
     // whether the 1 MB limit is hit. With such a low limit the process will
     // almost always exceed it, so we don't assert on the specific memory status.
-    assert!(result.is_ok(), "scan_files_and_dirs_with_memory_monitor should not error");
+    assert!(
+        result.is_ok(),
+        "scan_files_and_dirs_with_memory_monitor should not error"
+    );
     let scan_result = result.unwrap();
 
     // memory_limit_hit and memory_status must be consistent with each other
     match scan_result.memory_status {
         rudu::scan::MemoryLimitStatus::MemoryLimitHit => {
-            assert!(scan_result.memory_limit_hit, "status is MemoryLimitHit but flag is false");
+            assert!(
+                scan_result.memory_limit_hit,
+                "status is MemoryLimitHit but flag is false"
+            );
         }
         _ => {
-            assert!(!scan_result.memory_limit_hit, "flag is true but status is not MemoryLimitHit");
+            assert!(
+                !scan_result.memory_limit_hit,
+                "flag is true but status is not MemoryLimitHit"
+            );
         }
     }
 }
@@ -463,7 +474,11 @@ fn test_incremental_scan_returns_correct_entries() {
     let exclude_matcher = build_exclude_matcher(&exclude_patterns).unwrap();
 
     let result = scan_files_and_dirs_incremental(root, &args, &exclude_matcher, args.sort);
-    assert!(result.is_ok(), "incremental scan should not error: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "incremental scan should not error: {:?}",
+        result
+    );
 
     let scan = result.unwrap();
     assert!(
@@ -532,12 +547,14 @@ fn test_incremental_scan_second_run_uses_cache() {
     let exclude_matcher = build_exclude_matcher(&exclude_patterns).unwrap();
 
     // First scan — populates the cache
-    let first = scan_files_and_dirs_incremental(root, &make_args(), &exclude_matcher, SortKey::Name)
-        .expect("first scan should succeed");
+    let first =
+        scan_files_and_dirs_incremental(root, &make_args(), &exclude_matcher, SortKey::Name)
+            .expect("first scan should succeed");
 
     // Second scan — should see cache entries
-    let second = scan_files_and_dirs_incremental(root, &make_args(), &exclude_matcher, SortKey::Name)
-        .expect("second scan should succeed");
+    let second =
+        scan_files_and_dirs_incremental(root, &make_args(), &exclude_matcher, SortKey::Name)
+            .expect("second scan should succeed");
 
     // SAFETY: restoring the env var we set above.
     unsafe { std::env::remove_var("RUDU_CACHE_DIR") };

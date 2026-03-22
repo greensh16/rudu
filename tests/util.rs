@@ -24,7 +24,10 @@ impl TempCacheDir {
         let dir = tempfile::tempdir()?;
         let previous = env::var("RUDU_CACHE_DIR").ok();
         unsafe { env::set_var("RUDU_CACHE_DIR", dir.path()) };
-        Ok(TempCacheDir { _dir: dir, previous })
+        Ok(TempCacheDir {
+            _dir: dir,
+            previous,
+        })
     }
 }
 
@@ -72,7 +75,10 @@ mod tests {
 
         // After drop it should be restored
         let after = env::var("RUDU_CACHE_DIR").ok();
-        assert_eq!(after, before, "RUDU_CACHE_DIR should be restored after drop");
+        assert_eq!(
+            after, before,
+            "RUDU_CACHE_DIR should be restored after drop"
+        );
     }
 
     #[test]
@@ -87,6 +93,9 @@ mod tests {
         let dir2 = env::var("RUDU_CACHE_DIR").unwrap();
         drop(guard2);
 
-        assert_ne!(dir1, dir2, "Each guard should use a distinct temp directory");
+        assert_ne!(
+            dir1, dir2,
+            "Each guard should use a distinct temp directory"
+        );
     }
 }

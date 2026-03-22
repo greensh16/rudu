@@ -55,7 +55,11 @@ fn test_csv_renderer_produces_expected_schema() {
     args.output = Some(tmp_path.to_string_lossy().into_owned());
 
     let result = csv::render(&entries, &args);
-    assert!(result.is_ok(), "csv::render returned an error: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "csv::render returned an error: {:?}",
+        result
+    );
 
     // Read and verify the CSV content
     let mut buf = String::new();
@@ -75,12 +79,18 @@ fn test_csv_renderer_produces_expected_schema() {
 
     // Should have header + 2 data rows
     let line_count = buf.lines().count();
-    assert_eq!(line_count, 3, "Expected 1 header + 2 data rows, got {line_count}");
+    assert_eq!(
+        line_count, 3,
+        "Expected 1 header + 2 data rows, got {line_count}"
+    );
 
     // Verify data rows contain expected values (EntryType::as_str() returns "DIR" / "FILE")
     assert!(buf.contains("DIR"), "Dir entry should have type 'DIR'");
     assert!(buf.contains("FILE"), "File entry should have type 'FILE'");
-    assert!(buf.contains("testuser"), "Owner 'testuser' should appear in output");
+    assert!(
+        buf.contains("testuser"),
+        "Owner 'testuser' should appear in output"
+    );
 }
 
 #[test]
@@ -111,7 +121,11 @@ fn test_csv_renderer_handles_none_owner_and_inodes() {
     args.output = Some(tmp_path.to_string_lossy().into_owned());
 
     let result = csv::render(&entries, &args);
-    assert!(result.is_ok(), "csv::render should not error on None fields: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "csv::render should not error on None fields: {:?}",
+        result
+    );
 
     let mut buf = String::new();
     std::fs::File::open(&tmp_path)
@@ -121,7 +135,10 @@ fn test_csv_renderer_handles_none_owner_and_inodes() {
 
     // Should still produce header + 2 rows
     let line_count = buf.lines().count();
-    assert_eq!(line_count, 3, "Expected 1 header + 2 data rows, got {line_count}");
+    assert_eq!(
+        line_count, 3,
+        "Expected 1 header + 2 data rows, got {line_count}"
+    );
 
     // The paths must appear even when owner/inodes are absent
     assert!(buf.contains("no-owner.txt"), "path should appear in output");
@@ -136,7 +153,11 @@ fn test_csv_renderer_writes_to_stdout_when_no_output_path() {
     let args = make_args(PathBuf::from("/test")); // output: None
 
     let result = csv::render(&entries, &args);
-    assert!(result.is_ok(), "csv::render with output=None should succeed: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "csv::render with output=None should succeed: {:?}",
+        result
+    );
 }
 
 #[test]
@@ -147,5 +168,9 @@ fn test_terminal_renderer_works() {
 
     // terminal::render writes to stdout; verify it doesn't error
     let result = terminal::render(&entries, &args, &root);
-    assert!(result.is_ok(), "terminal::render returned an error: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "terminal::render returned an error: {:?}",
+        result
+    );
 }

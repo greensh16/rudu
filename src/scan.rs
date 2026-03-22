@@ -144,7 +144,6 @@ struct ScanJob {
     parent_paths: Vec<PathBuf>,
 }
 
-
 /// Scans a directory using work-stealing for large subdirectories.
 ///
 /// Fixes applied vs the original:
