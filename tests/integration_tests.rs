@@ -863,25 +863,27 @@ fn set_atime_days_ago(path: &std::path::Path, days: u64) {
 
     let meta = get_dir_metadata(path).expect("stat failed");
 
-    // Cast straight to the libc types, once. `suseconds_t` is i32 on macOS but
-    // i64 on 64-bit Linux, so going through an intermediate i64 would leave a
-    // redundant second cast that fails `clippy -D warnings` on Linux while
-    // being necessary on macOS.
-    let now = rudu::atime::now_unix() as libc::time_t;
-    let target = now - (days as libc::time_t) * 86_400;
+    // Compute in i64, then let `as _` infer each field's own type at the point
+    // of use. Naming the libc aliases directly does not work portably here:
+    // `suseconds_t` is i32 on macOS but i64 on Linux (so a spelled-out cast is
+    // redundant on one and required on the other, tripping
+    // `clippy::unnecessary_cast`), and `libc::time_t` is deprecated on musl.
+    // `as _` sidesteps both without naming a type.
+    let now = rudu::atime::now_unix() as i64;
+    let target = now - (days as i64) * 86_400;
 
     // get_dir_metadata reports mtime in nanoseconds; utimes takes microseconds.
-    let mtime_secs = (meta.mtime / 1_000_000_000) as libc::time_t;
-    let mtime_usec = ((meta.mtime % 1_000_000_000) / 1_000) as libc::suseconds_t;
+    let mtime_secs = (meta.mtime / 1_000_000_000) as i64;
+    let mtime_usec = ((meta.mtime % 1_000_000_000) / 1_000) as i64;
 
     let times = [
         libc::timeval {
-            tv_sec: target,
+            tv_sec: target as _,
             tv_usec: 0,
         },
         libc::timeval {
-            tv_sec: mtime_secs,
-            tv_usec: mtime_usec,
+            tv_sec: mtime_secs as _,
+            tv_usec: mtime_usec as _,
         },
     ];
     let c_path = CString::new(path.as_os_str().as_bytes()).unwrap();

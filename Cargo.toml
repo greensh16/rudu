@@ -4,7 +4,7 @@
 # [lib] and [[bin]] sections below), so the command users type, and the
 # `use rudu::...` paths in tests and benches, are unchanged.
 name = "rudu-hpc"
-version = "1.5.0"
+version = "1.5.1"
 authors = ["Sam Green"]
 edition = "2024"
 description = "A fast, parallel replacement for du, with incremental caching, memory limits, and access-age reporting for HPC scratch filesystems"

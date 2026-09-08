@@ -70,7 +70,7 @@ sudo pacman -S base-devel
 This is the easiest method for most users.
 
 ```bash
-cargo install rudu
+cargo install rudu-hpc
 ```
 
 **Expected output:**

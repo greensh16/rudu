@@ -60,14 +60,25 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Statically linked musl builds are the DEFAULT Linux assets. They
+          # have no libc dependency, so they run on old enterprise Linux (NCI
+          # Gadi is Rocky 8 / glibc 2.28) as well as on modern distros. A
+          # glibc-linked binary built on the oldest available runner (Ubuntu
+          # 22.04, glibc 2.35) fails there with "GLIBC_2.34 not found".
           - os: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
+            target: x86_64-unknown-linux-musl
             artifact: rudu-linux-x86_64
 
           - os: ubuntu-22.04
-            target: aarch64-unknown-linux-gnu
+            target: aarch64-unknown-linux-musl
             artifact: rudu-linux-aarch64
-            cross: true
+
+          # glibc build kept as a suffixed extra: musl's allocator is slower
+          # under heavy multi-threaded allocation, so anyone on a modern distro
+          # who wants the last few percent can take this one instead.
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            artifact: rudu-linux-x86_64-gnu
 
           - os: macos-14
             target: aarch64-apple-darwin
@@ -85,24 +96,33 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Install cross (for aarch64 Linux)
-        if: matrix.cross
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cross
-
       - name: Cache
         uses: Swatinem/rust-cache@v2
         with:
           key: release-${{ matrix.target }}
 
-      - name: Build release binary (native)
-        if: "!matrix.cross"
+      # No `cross` or musl-gcc needed: .cargo/config.toml points the musl
+      # targets at rust-lld, which links them natively on any host.
+      - name: Build release binary
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Build release binary (cross)
-        if: matrix.cross
-        run: cross build --release --target ${{ matrix.target }}
+      # A Linux asset that silently depends on a newer glibc than the target
+      # system is exactly the bug this matrix exists to prevent, so assert that
+      # the musl builds really are static before publishing them.
+      - name: Verify musl binaries are statically linked
+        if: contains(matrix.target, 'musl')
+        run: |
+          bin=target/${{ matrix.target }}/release/rudu
+          file "$bin"
+          if readelf -l "$bin" | grep -q INTERP; then
+            echo "::error::$bin requests a dynamic loader; it is not static"
+            exit 1
+          fi
+          if readelf -V "$bin" 2>/dev/null | grep -q GLIBC_; then
+            echo "::error::$bin still references GLIBC symbols"
+            exit 1
+          fi
+          echo "OK: statically linked, no glibc dependency"
 
       - name: Stage binary
         run: |

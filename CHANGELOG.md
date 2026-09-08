@@ -5,6 +5,47 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.1] - 2026-09-08
+
+### Bug Fixes
+
+#### Linux release binaries failed to start on HPC systems
+- The v1.5.0 Linux binaries were dynamically linked against glibc 2.35 — the
+  oldest available GitHub runner is Ubuntu 22.04 — so they failed to start on
+  older enterprise Linux with `/lib64/libc.so.6: version 'GLIBC_2.34' not
+  found`. That includes NCI's Gadi (Rocky 8, glibc 2.28), the kind of system
+  rudu is built for. No choice of hosted runner fixes this: HPC systems run
+  glibc years older than any available image.
+- `rudu-linux-x86_64` and `rudu-linux-aarch64` are now statically linked musl
+  builds with no libc dependency at all, so one binary runs on both old and
+  current distributions. The release job asserts each has no `PT_INTERP` and no
+  `GLIBC_` references before publishing, so this cannot regress silently.
+- A glibc build is still published, as `rudu-linux-x86_64-gnu`, for anyone on a
+  modern distribution who prefers glibc's allocator — musl's is slower under
+  heavy multi-threaded allocation.
+- `--show-owner` still works on the static binaries. `getpwuid_r` cannot do
+  NSS/LDAP lookups when statically linked, but the existing `getent` fallback
+  shells out to the dynamically-linked system binary and caches each resolved
+  UID, so usernames still resolve on LDAP-backed clusters.
+
+No scanner behaviour changed in this release; it is a packaging fix.
+
+### Changed
+- `cross` is no longer used by the release workflow. `.cargo/config.toml`
+  points the musl targets at `rust-lld`, which links them natively, so the
+  aarch64 build no longer installs and runs a cross container.
+- CI type-checks the `x86_64-unknown-linux-musl` target on every pull request,
+  so a musl-breaking change fails review rather than a release.
+
+### Maintenance
+- The `utimes` test helper now fills `libc::timeval` with `as _` instead of
+  naming the libc type aliases. `suseconds_t` differs between macOS (`i32`) and
+  Linux (`i64`), and `libc::time_t` is deprecated on musl, so any spelled-out
+  cast warns on at least one of the three targets. Clean on macOS, linux-gnu,
+  and linux-musl.
+- `docs/INSTALLATION.md` still said `cargo install rudu`; corrected to
+  `rudu-hpc`.
+
 ## [1.5.0] - 2026-09-08
 
 ### Features
@@ -588,6 +629,7 @@ Features planned for upcoming releases:
 - **Memory safety** through Rust
 - **Simple CLI interface**
 
+[1.5.1]: https://github.com/greensh16/rudu/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/greensh16/rudu/compare/v1.4.9...v1.5.0
 [1.4.9]: https://github.com/greensh16/rudu/compare/v1.4.0...v1.4.9
 [1.4.0]: https://github.com/greensh16/rudu/compare/v1.3.0...v1.4.0

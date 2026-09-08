@@ -86,3 +86,11 @@ jobs:
         run: cargo doc --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
+
+      # Release Linux assets are statically linked musl builds, so that they run
+      # on old enterprise Linux (HPC systems lag years behind). Type-check that
+      # target here so a musl-breaking change fails a PR rather than a release.
+      - name: Check the musl target still builds
+        run: |
+          rustup target add x86_64-unknown-linux-musl
+          cargo check --target x86_64-unknown-linux-musl --all-targets
