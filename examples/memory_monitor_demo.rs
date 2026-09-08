@@ -12,19 +12,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args {
         path: Path::new(".").to_path_buf(),
         depth: Some(3),
-        exclude: vec![],
         show_files: false,
-        show_owner: false,
-        show_inodes: false,
         sort: SortKey::Size,
-        output: None,
-        no_cache: false,
         cache_ttl: 24,
-        profile: false,
-        threads: None,
-        threads_strategy: rudu::thread_pool::ThreadPoolStrategy::Default,
         memory_limit: Some(100),
-        memory_check_interval_ms: 200,
+        ..Default::default()
     };
 
     // Create a simple exclude matcher (empty in this demo)

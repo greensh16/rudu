@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  # Allows re-running the checks by hand without pushing a commit.
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+# Superseded PR runs are cancelled so a burst of commits does not queue several
+# full matrices. Pushes to main are never cancelled: every commit on main keeps
+# its own result, so a later green run cannot hide which commit broke a build.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # ── Build and test ───────────────────────────────────────────────────────────
+  # Run on both platforms rudu claims to support: it makes raw `lstat` calls,
+  # resolves UIDs through libc, and reads RSS per-platform, so a Linux-only run
+  # would not exercise the macOS code paths at all.
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: test-${{ matrix.os }}
+
+      # --all-targets so benches and examples are compiled too, not just the
+      # library and binary. They build `Args` and cache entries against the
+      # library API and have silently rotted out of sync with it before, and
+      # some of their platform code is macOS-only so a Linux-only check would
+      # miss it. Debug profile, so this stays much cheaper than `cargo bench`.
+      - name: Build (including tests, benches, examples)
+        run: cargo build --all-targets --verbose
+
+      # Covers unit, integration, and doc tests in one invocation.
+      - name: Test
+        run: cargo test --verbose
+
+  # ── Format, lint, docs ───────────────────────────────────────────────────────
+  # Platform-independent, so run once rather than per-OS.
+  lint:
+    name: Format, lint, docs
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: lint
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      # --all-targets so tests, benches, and examples are linted too, not just
+      # the library and binary.
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Check documentation
+        run: cargo doc --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings

@@ -1,11 +1,13 @@
 //! Cache module for rudu
 //!
 //! This module provides disk-based caching functionality for rudu to improve
-//! performance on subsequent runs by storing metadata about scanned directories.
+//! performance on subsequent runs by storing metadata about scanned
+//! directories and files.
 //!
-//! The cache uses bincode for efficient serialization and stores cache files
-//! either in the scanned directory (as `.rudu-cache.bin`) or in the system
-//! cache directory as a fallback.
+//! The cache uses bincode for efficient serialization. Cache files are stored
+//! in a configurable cache directory (`RUDU_CACHE_DIR`, falling back to the
+//! XDG cache directory), never inside the scanned tree — writing there would
+//! perturb the very mtimes the cache validates against.
 
 pub mod model;
 
@@ -13,16 +15,14 @@ pub mod model;
 mod tests;
 
 use anyhow::{Context, Result, anyhow};
-use memmap2::{Mmap, MmapMut};
-use once_cell::sync::Lazy;
 use std::collections::HashMap;
-use std::fs::{File, OpenOptions};
-use std::io::{Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{LazyLock, Mutex};
 
-// Thread-safe file lock for atomic cache operations
-static FILE_LOCK: Lazy<parking_lot::Mutex<()>> = Lazy::new(|| parking_lot::Mutex::new(()));
+// In-process file lock serialising cache reads/writes. (Cross-process safety
+// comes from the write-to-temp-then-rename pattern in save_cache_to_file.)
+static FILE_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 // Global cache enabled flag - can be disabled dynamically when nearing memory limits
 static CACHE_ENABLED: AtomicBool = AtomicBool::new(true);
@@ -70,11 +70,11 @@ pub fn cache_root() -> PathBuf {
     }
 }
 
-/// Load cache from disk using memory-mapped IO for O(1) access time
+/// Load cache from disk.
 ///
-/// This function uses memory-mapped files to efficiently load large caches
-/// without reading the entire file into memory at once. Returns an empty cache
-/// if the cache file doesn't exist or is invalid.
+/// Reads and deserializes the whole cache file (bincode is not a random-access
+/// format, so the file must be read in full regardless of how it is opened).
+/// Returns an empty cache if the cache file doesn't exist or is invalid.
 ///
 /// # Arguments
 /// * `root` - The root path to determine the cache file location
@@ -125,10 +125,7 @@ pub fn load_cache(root: &Path, ttl_seconds: u64) -> HashMap<PathBuf, CacheEntry>
     }
 }
 
-/// Save cache to disk using efficient serialization
-///
-/// This function saves the cache entries to disk in a format that can be
-/// efficiently loaded using memory-mapped IO.
+/// Save cache to disk using bincode serialization with an atomic write.
 ///
 /// # Arguments
 /// * `root` - The root path to determine the cache file location
@@ -165,10 +162,7 @@ pub fn invalidate_cache(root: &Path) -> Result<bool> {
     }
 }
 
-/// Save cache to disk using efficient serialization with a specific root mtime
-///
-/// This function saves the cache entries to disk in a format that can be
-/// efficiently loaded using memory-mapped IO.
+/// Save cache to disk using bincode serialization with a specific root mtime.
 ///
 /// # Arguments
 /// * `root` - The root path to determine the cache file location
@@ -214,35 +208,27 @@ pub fn save_cache_with_mtime(
         .with_context(|| format!("Failed to save cache to: {}", cache_path.display()))
 }
 
-/// Load cache from a specific file using memory-mapped IO
+/// Load cache from a specific file
 fn load_cache_from_file(path: &Path) -> Result<model::Cache> {
-    // Lock file access to prevent concurrent reads/writes
-    let _g = FILE_LOCK.lock();
+    // Lock file access to prevent concurrent reads/writes within this process
+    let _g = FILE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
 
-    let file = File::open(path)
-        .with_context(|| format!("Failed to open cache file: {}", path.display()))?;
+    // Plain buffered read: bincode deserializes the whole buffer anyway, so
+    // the previous memory-mapped path added an `unsafe` block (and a SIGBUS
+    // hazard if another process truncated the file) for no benefit.
+    let data = std::fs::read(path)
+        .with_context(|| format!("Failed to read cache file: {}", path.display()))?;
 
-    let file_len = file
-        .metadata()
-        .with_context(|| format!("Failed to get file metadata: {}", path.display()))?
-        .len();
-
-    if file_len == 0 {
+    if data.is_empty() {
         return Err(anyhow!("Cache file is empty"));
     }
 
-    // Create memory-mapped file for efficient access
-    let mmap = unsafe {
-        Mmap::map(&file)
-            .with_context(|| format!("Failed to memory-map cache file: {}", path.display()))?
-    };
-
     // Try to deserialize as new Cache format first
-    match bincode::deserialize::<model::Cache>(&mmap) {
+    match bincode::deserialize::<model::Cache>(&data) {
         Ok(cache) => Ok(cache),
         Err(_) => {
             // Try to deserialize as old format (HashMap<PathBuf, CacheEntry>)
-            let legacy_cache: HashMap<PathBuf, CacheEntry> = bincode::deserialize(&mmap)
+            let legacy_cache: HashMap<PathBuf, CacheEntry> = bincode::deserialize(&data)
                 .with_context(|| format!("Failed to deserialize cache from: {}", path.display()))?;
 
             // Convert legacy format to new format
@@ -262,27 +248,26 @@ fn load_cache_from_file(path: &Path) -> Result<model::Cache> {
     }
 }
 
-/// Save cache to a specific file using efficient serialization with atomic writes
+/// Save cache to a specific file with an atomic write.
+///
+/// The data is written to a sibling temporary file and then renamed into
+/// place, so readers never observe a partially-written cache. (The previous
+/// implementation additionally tried memory-mapped writes with a regular-IO
+/// fallback — extra complexity and an `unsafe` block for no measurable gain
+/// over a plain buffered write.)
 fn save_cache_to_file(path: &Path, cache: &model::Cache) -> Result<()> {
-    // Lock file access to prevent concurrent reads/writes
-    let _g = FILE_LOCK.lock();
+    // Lock file access to prevent concurrent reads/writes within this process
+    let _g = FILE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
 
-    // First serialize to get the size
     let serialized_data = bincode::serialize(cache).context("Failed to serialize cache data")?;
 
-    // Create temporary file path
     let temp_path = path.with_extension("tmp");
-
-    // Try memory-mapped IO first, fall back to regular file IO if it fails
-    if try_save_with_mmap(&temp_path, &serialized_data).is_err() {
-        // Fallback to regular file IO
-        save_with_regular_io(&temp_path, &serialized_data).with_context(|| {
-            format!(
-                "Failed to save cache to temporary file: {}",
-                temp_path.display()
-            )
-        })?;
-    }
+    std::fs::write(&temp_path, &serialized_data).with_context(|| {
+        format!(
+            "Failed to save cache to temporary file: {}",
+            temp_path.display()
+        )
+    })?;
 
     // Atomically move the temporary file to the final location
     std::fs::rename(&temp_path, path).with_context(|| {
@@ -292,75 +277,6 @@ fn save_cache_to_file(path: &Path, cache: &model::Cache) -> Result<()> {
             path.display()
         )
     })?;
-
-    Ok(())
-}
-
-/// Try to save using memory-mapped IO
-fn try_save_with_mmap(path: &Path, data: &[u8]) -> Result<()> {
-    let file_size = data.len() as u64;
-
-    // Create or truncate the file
-    let mut file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(path)
-        .with_context(|| format!("Failed to create cache file: {}", path.display()))?;
-
-    // Set the file size
-    file.set_len(file_size)
-        .with_context(|| format!("Failed to set file size: {}", path.display()))?;
-
-    // Ensure we're at the beginning of the file
-    file.seek(SeekFrom::Start(0))
-        .with_context(|| format!("Failed to seek to beginning of file: {}", path.display()))?;
-
-    // Create memory-mapped file for writing
-    let mut mmap = unsafe {
-        MmapMut::map_mut(&file).with_context(|| {
-            format!(
-                "Failed to memory-map cache file for writing: {}",
-                path.display()
-            )
-        })?
-    };
-
-    // Copy the serialized data to the memory-mapped region
-    if mmap.len() >= data.len() {
-        mmap[..data.len()].copy_from_slice(data);
-    } else {
-        return Err(anyhow!(
-            "Memory-mapped region too small: {} < {}",
-            mmap.len(),
-            data.len()
-        ));
-    }
-
-    // Flush the memory-mapped data to disk
-    mmap.flush()
-        .with_context(|| format!("Failed to flush cache data to disk: {}", path.display()))?;
-
-    Ok(())
-}
-
-/// Fallback to regular file IO
-fn save_with_regular_io(path: &Path, data: &[u8]) -> Result<()> {
-    use std::io::Write;
-
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(path)
-        .with_context(|| format!("Failed to create cache file: {}", path.display()))?;
-
-    file.write_all(data)
-        .with_context(|| format!("Failed to write cache data: {}", path.display()))?;
-
-    file.flush()
-        .with_context(|| format!("Failed to flush cache data: {}", path.display()))?;
 
     Ok(())
 }
@@ -433,6 +349,7 @@ mod cache_root_tests {
             inode_cnt: Some(1),
             owner: Some(1000),
             entry_type: crate::data::EntryType::File,
+            atime: None,
         });
         cache.insert(PathBuf::from("test.txt"), entry);
 
@@ -491,6 +408,7 @@ mod cache_root_tests {
             inode_cnt: Some(1),
             owner: Some(1000),
             entry_type: crate::data::EntryType::File,
+            atime: None,
         });
         test_cache.insert(PathBuf::from("test.txt"), entry);
 

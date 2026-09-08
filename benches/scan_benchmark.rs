@@ -3,7 +3,6 @@ use rudu::Args;
 use rudu::cache::save_cache;
 use rudu::cli::SortKey;
 use rudu::scan::{scan_files_and_dirs, scan_files_and_dirs_incremental};
-use rudu::thread_pool::ThreadPoolStrategy;
 use rudu::utils::build_exclude_matcher;
 use std::collections::HashMap;
 use std::fs;
@@ -70,21 +69,23 @@ fn create_cache_for_structure(
     for entry in entries.entries {
         let metadata = fs::metadata(&entry.path).unwrap();
         let owner_u32 = entry.owner.as_ref().and_then(|s| s.parse::<u32>().ok());
-        let cache_entry = rudu::cache::CacheEntry::new(
-            rudu::utils::path_hash(&entry.path),
-            entry.path.clone(),
-            entry.size,
-            metadata
+        // Named-parameter form; the positional 8-argument constructor this
+        // bench used was replaced by CacheEntryParams in 1.4.10.
+        let cache_entry = rudu::cache::CacheEntry::new(rudu::cache::CacheEntryParams {
+            path: entry.path.clone(),
+            size: entry.size,
+            mtime: metadata
                 .modified()
                 .unwrap()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_secs(),
-            1, // nlink - simplified for benchmark
-            entry.inodes,
-            owner_u32,
-            entry.entry_type,
-        );
+            nlink: 1, // simplified for benchmark
+            inode_cnt: entry.inodes,
+            owner: owner_u32,
+            entry_type: entry.entry_type,
+            atime: entry.atime,
+        });
         cache.insert(entry.path, cache_entry);
     }
 
@@ -126,20 +127,10 @@ fn benchmark_scan_small_directory(c: &mut Criterion) {
 
     let args = Args {
         path: root.to_path_buf(),
-        depth: None,
         sort: rudu::cli::SortKey::Size,
         show_files: false,
-        exclude: vec![],
-        show_owner: false,
-        output: None,
-        threads: None,
         show_inodes: true,
-        threads_strategy: ThreadPoolStrategy::Default,
-        no_cache: false,
-        cache_ttl: 604800, // 7 days
-        profile: false,
-        memory_limit: None,
-        memory_check_interval_ms: 200,
+        ..Default::default()
     };
 
     let exclude_matcher = build_exclude_matcher(&[]).unwrap();
@@ -166,20 +157,10 @@ fn benchmark_scan_deep_directory(c: &mut Criterion) {
 
     let args = Args {
         path: root.to_path_buf(),
-        depth: None,
         sort: rudu::cli::SortKey::Size,
         show_files: false,
-        exclude: vec![],
-        show_owner: false,
-        output: None,
-        threads: None,
         show_inodes: true,
-        threads_strategy: ThreadPoolStrategy::Default,
-        no_cache: false,
-        cache_ttl: 604800, // 7 days
-        profile: false,
-        memory_limit: None,
-        memory_check_interval_ms: 200,
+        ..Default::default()
     };
 
     let exclude_matcher = build_exclude_matcher(&[]).unwrap();
@@ -206,20 +187,11 @@ fn benchmark_scan_with_owner_info(c: &mut Criterion) {
 
     let args = Args {
         path: root.to_path_buf(),
-        depth: None,
         sort: rudu::cli::SortKey::Size,
         show_files: false,
-        exclude: vec![],
         show_owner: true,
-        output: None,
-        threads: None,
         show_inodes: true,
-        threads_strategy: ThreadPoolStrategy::Default,
-        no_cache: false,
-        cache_ttl: 604800, // 7 days
-        profile: false,
-        memory_limit: None,
-        memory_check_interval_ms: 200,
+        ..Default::default()
     };
 
     let exclude_matcher = build_exclude_matcher(&[]).unwrap();
@@ -247,20 +219,10 @@ fn benchmark_scan_with_cache_hit(c: &mut Criterion) {
 
     let args = Args {
         path: root.to_path_buf(),
-        depth: None,
         sort: rudu::cli::SortKey::Size,
         show_files: false,
-        exclude: vec![],
-        show_owner: false,
-        output: None,
-        threads: None,
         show_inodes: true,
-        threads_strategy: ThreadPoolStrategy::Default,
-        no_cache: false,
-        cache_ttl: 604800, // 7 days
-        profile: false,
-        memory_limit: None,
-        memory_check_interval_ms: 200,
+        ..Default::default()
     };
 
     // Create and populate cache
@@ -291,20 +253,10 @@ fn benchmark_scan_with_cache_miss(c: &mut Criterion) {
 
     let args = Args {
         path: root.to_path_buf(),
-        depth: None,
         sort: rudu::cli::SortKey::Size,
         show_files: false,
-        exclude: vec![],
-        show_owner: false,
-        output: None,
-        threads: None,
         show_inodes: true,
-        threads_strategy: ThreadPoolStrategy::Default,
-        no_cache: false,
-        cache_ttl: 604800, // 7 days
-        profile: false,
-        memory_limit: None,
-        memory_check_interval_ms: 200,
+        ..Default::default()
     };
 
     // Create and populate cache
@@ -342,20 +294,10 @@ fn benchmark_scan_incremental_deep(c: &mut Criterion) {
 
     let args = Args {
         path: root.to_path_buf(),
-        depth: None,
         sort: rudu::cli::SortKey::Size,
         show_files: false,
-        exclude: vec![],
-        show_owner: false,
-        output: None,
-        threads: None,
         show_inodes: true,
-        threads_strategy: ThreadPoolStrategy::Default,
-        no_cache: false,
-        cache_ttl: 604800, // 7 days
-        profile: false,
-        memory_limit: None,
-        memory_check_interval_ms: 200,
+        ..Default::default()
     };
 
     // Create and populate cache

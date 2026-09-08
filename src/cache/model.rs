@@ -6,8 +6,6 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fs::{File, OpenOptions};
-use std::io::{BufReader, BufWriter};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -42,7 +40,8 @@ pub struct CacheEntry {
     pub path: PathBuf,
     /// Size of the file/directory in bytes
     pub size: u64,
-    /// Last modification time (Unix timestamp)
+    /// Last modification time in nanoseconds since the Unix epoch
+    /// (only ever compared for equality against a fresh reading)
     pub mtime: u64,
     /// Number of hard links (for directories, indicates potential new children)
     pub nlink: u64,
@@ -52,6 +51,17 @@ pub struct CacheEntry {
     pub owner: Option<u32>,
     /// Type of entry (file or directory)
     pub entry_type: EntryType,
+    /// Last access time in whole seconds since the Unix epoch.
+    ///
+    /// Only the raw per-entry atime is cached, never a derived rollup: the
+    /// at-risk threshold (`--purge-days`) can change between runs, so
+    /// directory rollups are recomputed from restored entries each time.
+    ///
+    /// A restored atime can be older than reality — reading a file updates its
+    /// atime but not its parent's mtime, so the subtree still validates as a
+    /// cache hit. atime only moves forward, so this over-states age and
+    /// therefore purge risk; it never reports at-risk data as safe.
+    pub atime: Option<u64>,
 }
 
 /// Named parameters for constructing a [`CacheEntry`].
@@ -65,7 +75,7 @@ pub struct CacheEntryParams {
     pub path: PathBuf,
     /// Size of the file/directory in bytes
     pub size: u64,
-    /// Last modification time (Unix timestamp)
+    /// Last modification time in nanoseconds since the Unix epoch
     pub mtime: u64,
     /// Number of hard links
     pub nlink: u64,
@@ -75,6 +85,8 @@ pub struct CacheEntryParams {
     pub owner: Option<u32>,
     /// Whether this entry is a file or directory
     pub entry_type: EntryType,
+    /// Last access time in whole seconds since the Unix epoch
+    pub atime: Option<u64>,
 }
 
 /// Complete cache structure containing header and entries
@@ -181,6 +193,7 @@ impl CacheEntry {
             inode_cnt: params.inode_cnt,
             owner: params.owner,
             entry_type: params.entry_type,
+            atime: params.atime,
         }
     }
 
@@ -219,12 +232,16 @@ impl Cache {
         self.entries.is_empty()
     }
 
-    /// Load cache from a file using bincode deserialization
+    /// Load cache from a file using bincode deserialization.
+    ///
+    /// Test-only: the production load path (with format fallback and
+    /// invalidation) lives in `cache::load_cache`.
+    #[cfg(test)]
     pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let file = File::open(path.as_ref())
+        let file = std::fs::File::open(path.as_ref())
             .with_context(|| format!("Failed to open cache file: {}", path.as_ref().display()))?;
 
-        let reader = BufReader::new(file);
+        let reader = std::io::BufReader::new(file);
         let cache = bincode::deserialize_from(reader).with_context(|| {
             format!(
                 "Failed to deserialize cache from: {}",
@@ -235,16 +252,20 @@ impl Cache {
         Ok(cache)
     }
 
-    /// Save cache to a file using bincode serialization
+    /// Save cache to a file using bincode serialization.
+    ///
+    /// Test-only: the production save path (atomic temp-file rename) lives in
+    /// `cache::save_cache_with_mtime`.
+    #[cfg(test)]
     pub fn save_to_file<P: AsRef<Path>>(&self, path: P) -> Result<()> {
-        let file = OpenOptions::new()
+        let file = std::fs::OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(true)
             .open(path.as_ref())
             .with_context(|| format!("Failed to create cache file: {}", path.as_ref().display()))?;
 
-        let writer = BufWriter::new(file);
+        let writer = std::io::BufWriter::new(file);
         bincode::serialize_into(writer, self).with_context(|| {
             format!("Failed to serialize cache to: {}", path.as_ref().display())
         })?;
@@ -292,14 +313,10 @@ pub fn get_xdg_cache_dir() -> Result<PathBuf> {
 
 /// Calculate a stable, version-independent hash of a path for use in cache file names.
 ///
-/// Uses FNV-1a rather than `DefaultHasher` to ensure the hash is consistent
-/// across Rust versions and does not silently orphan on-disk cache files after upgrades.
+/// Delegates to [`crate::utils::path_hash`] (FNV-1a) so entry keys and cache
+/// file names are derived from a single implementation.
 fn calculate_path_hash(path: &Path) -> u64 {
-    use std::hash::{Hash, Hasher};
-
-    let mut hasher = fnv::FnvHasher::default();
-    path.hash(&mut hasher);
-    hasher.finish()
+    crate::utils::path_hash(path)
 }
 
 /// Get root directory's modification time
@@ -336,6 +353,7 @@ mod tests {
             inode_cnt: Some(42),
             owner: Some(1000),
             entry_type: EntryType::File,
+            atime: None,
         });
 
         // path_hash is derived from path — verify it matches the stable FNV hash
@@ -359,6 +377,7 @@ mod tests {
             inode_cnt: Some(42),
             owner: Some(1000),
             entry_type: EntryType::File,
+            atime: None,
         });
 
         // Valid case
@@ -385,6 +404,7 @@ mod tests {
             inode_cnt: Some(42),
             owner: Some(1000),
             entry_type: EntryType::File,
+            atime: None,
         });
 
         cache.add_entry(entry.clone());
@@ -418,6 +438,7 @@ mod tests {
             inode_cnt: Some(42),
             owner: Some(1000),
             entry_type: EntryType::File,
+            atime: None,
         });
         let entry_hash = entry.path_hash;
         cache.add_entry(entry);

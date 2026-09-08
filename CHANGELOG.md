@@ -5,6 +5,131 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-09-08
+
+### Features
+
+#### Size Filtering
+- **`--min-size SIZE`** hides entries below a threshold — "if it's smaller than
+  N bytes, I don't want to know about it". Accepts a bare byte count (`4096`),
+  decimal units (`10MB`, `1.5GB`, or bare `10M`), and binary units (`1GiB`).
+  Decimal is the default because rudu *prints* decimal sizes, so `--min-size
+  819kB` matches a row the table showed as `819.20 kB`.
+- **It is a display filter, not a scan filter**: hidden entries still count
+  toward their parent directories' totals, so reported sizes stay correct and
+  keep matching `du`. It applies to directories as well as files, and hiding a
+  small directory can never hide anything wanted — a directory's size is its
+  whole subtree, so if it is under the threshold everything beneath it is too.
+- Composes with `--depth`, `--exclude`, and `--older-than` (an entry must
+  satisfy all of them). No scan or cache changes.
+- An unparseable threshold is rejected at the CLI boundary rather than falling
+  back to zero, which would look like the flag had been ignored.
+
+#### Access-Age Reporting for Scratch Purge Policies
+- **`--show-atime`** reports each entry's last access time and age in days, for
+  judging how close data is to an HPC scratch purge policy (NCI `/scratch`
+  deletes files unaccessed for 100 days). Access time comes from the `lstat`
+  the scan already performs, so the flag costs no extra syscalls.
+- **Directories report the oldest entry in their subtree**, not their own atime.
+  A directory's own atime is useless for this question — merely listing a
+  directory updates it, and the scan does exactly that — so a directory row
+  answers "what under here will be purged first?". A directory containing no
+  files at all reports `-` rather than a misleading "0 days".
+- **`--purge-days N`** (default 100) sets the at-risk threshold. Directory rows
+  gain an `AT RISK` column: the bytes beneath them belonging to files already
+  past the threshold, and what share of the directory that is. Hard links are
+  counted once per link name in this rollup but once per inode in directory
+  totals, so the value is clamped to the directory size rather than exceeding
+  100%.
+- **`--older-than N`** filters output to entries not accessed for at least N
+  days (implying `--show-atime`), so `--older-than 100 --sort size` lists
+  exactly what a purge will take, largest first. A directory survives the filter
+  when anything beneath it is old enough, making it a drill-down that combines
+  with `--depth`.
+- **An access-age summary** is printed to stderr — bytes and file counts bucketed
+  by age, with the purgeable band flagged. It is computed over the complete scan
+  before `--depth` and `--older-than` filtering, so the totals describe the data,
+  not the visible rows, and it goes to stderr so it never contaminates a piped
+  table or `--output` CSV.
+- **CSV export** gains `atime`, `atime_unix`, `age_days`, and `at_risk_bytes`
+  columns. They are empty unless `--show-atime` was given, so the schema shape is
+  stable between runs.
+- **Cache format** now stores each entry's raw atime — but never a derived
+  rollup, since `--purge-days` can change between runs; rollups are recomputed
+  from restored entries every time. atime is cached even without `--show-atime`,
+  so a cache built by a plain run still serves a later access-age run. Caches
+  written by earlier versions are discarded and rebuilt automatically.
+  A restored atime can be older than reality (reading a file updates its atime
+  but not its parent's mtime, so the subtree still validates as a hit); because
+  atime only moves forward this over-states age and therefore purge risk, and
+  never reports at-risk data as safe. `--no-cache` gives exact values.
+- Default output is unchanged: without `--show-atime` the terminal table is
+  byte-for-byte what it was.
+
+### Maintenance
+- **`Args` now implements `Default`**, derived by parsing an empty argument list
+  so it cannot drift from the `default_value_t` attributes. Benchmarks build
+  their `Args` with `..Default::default()`, so adding a flag no longer breaks
+  every call site.
+- **Benchmarks compile again.** `cargo bench` and `cargo clippy --all-targets`
+  were already failing before this change: `work_stealing_benchmark`,
+  `thread_pool_benchmark`, `memory_benchmark`, and `profiling` built `Args`
+  without the `memory_limit`/`memory_check_interval_ms` fields added in 1.4.x,
+  and `scan_benchmark` still called the positional 8-argument
+  `CacheEntry::new` that 1.4.10 replaced with `CacheEntryParams`. All six
+  benches now build.
+- `libc` added as a dev-dependency: integration tests link only against the
+  `rudu` lib and dev-deps, and the access-time tests backdate atimes via
+  `utimes`.
+
+## [1.4.10] - 2026-07-17
+
+### Bug Fixes
+
+#### Incremental Cache Correctness (CODE_REVIEW.md C1-C3)
+- **Root is never a cache hit.** Previously an unchanged root directory caused the entire walk to be skipped, freezing results on stale data for up to the cache TTL (7 days by default) — changes deeper than the root's direct children were invisible.
+- **Deep subtree validation.** A cache hit at directory `D` is now only trusted after re-statting every cached directory beneath `D` (a directory's mtime/nlink only reflect its *direct* children). Structural changes — files or directories added, removed, or renamed at any depth — are now always detected. Known remaining limitation (inherent to directory-level caching): in-place modification of an existing file changes no directory mtime and is only picked up after TTL expiry or with `--no-cache`.
+- **Files are now cached and restored.** The cache previously stored only directories, so any cache-hit subtree silently dropped its files from the output (with the default `--show-files=true`, the second run of a scan listed fewer entries than the first). File entries (size, mtime, owner) are now cached and restored on hits, making output identical across runs.
+- **Cached sizes propagate to ancestors.** On a cache hit at `D`, `D`'s total was recorded for `D` itself but never added to its parent, grandparent, or the root — partially-cached runs understated every ancestor total and persisted the wrong numbers back into the cache. Hit totals are now propagated up to the root, and the hit directory is counted in its parent's inode count.
+- **Nanosecond mtime comparison.** Cache validation previously compared whole-second mtimes, so a change made in the same second as the caching scan was invisible. Cached mtimes are now nanosecond-precision.
+- **No cache save on aborted scans (CODE_REVIEW.md H3).** A scan terminated early by `--memory-limit` could previously persist its truncated directory totals as a valid cache; cache saving is now skipped whenever the scan was cut short.
+
+#### `--threads` Was a No-Op (CODE_REVIEW.md H1)
+- `--threads N` previously printed "Using local thread pool with N threads" and then configured nothing — the scan ran on all cores. It now builds the global rayon pool with exactly N threads. This also fixes `--memory-limit` "HPC mode", which claimed to limit itself to 2 threads while actually using every core. `--threads 0` is now rejected with an error.
+
+#### Symlinks and Special Files Misclassified as Directories (CODE_REVIEW.md H2)
+- Symbolic links, FIFOs, sockets, and device nodes were reported as `[DIR]` entries, and symlink metadata was read from the *target* (via `stat`), so a symlink could acquire its target directory's cached size and mtime. All non-directory entries are now leaf (`FILE`) entries, and all metadata syscalls use `lstat` — symlinks report their own size and are never followed, matching `du`.
+
+#### Directory Totals Excluded the Directories' Own Blocks (CODE_REVIEW.md M1)
+- Directory totals were the sum of contained file sizes only; every directory inode's own blocks (typically 4 KB each) were missing, making rudu's numbers diverge visibly from `du` on directory-heavy trees. Each directory's own disk usage now counts toward its total and its ancestors', in both scan paths.
+
+#### Exclude Patterns With `*` or `.` Silently Failed to Match Nested Paths (CODE_REVIEW.md M2)
+- `expand_exclude_patterns` skipped expansion for any pattern containing `*` or `.`, and since globset's `*` does not cross `/`, `--exclude '*.log'` matched almost nothing and `.git` was only excluded via a separate literal comparison. Any pattern without a `/` (bare names, dot-names, bare globs) is now expanded to `**/<pat>` and `**/<pat>/**`; a trailing `/` is stripped; patterns containing `/` pass through unchanged.
+
+#### Illusory Segfault Guard Removed From Owner Resolution (CODE_REVIEW.md M3)
+- `get_owner`'s `std::panic::catch_unwind` wrapper claimed to prevent segfaults, but `catch_unwind` only intercepts Rust panics — a real SIGSEGV aborts the process regardless, so the `GETPWUID_BROKEN` fallback path was unreachable in the scenario it was built for. Removed; the real mitigations (re-entrant `getpwuid_r`, `getent` fallback, per-UID caching) remain. `getent` is now invoked via absolute paths (`/usr/bin/getent`, `/bin/getent`) before falling back to `PATH`.
+
+#### Hard Links Double-Counted (CODE_REVIEW.md H4)
+- A file with multiple hard links inside the scanned tree contributed its size once per link, inflating directory totals (backups, git object stores, package caches). Files with `st_nlink > 1` are now deduplicated by `(st_dev, st_ino)` and counted once in totals, as `du` does. Each link name is still listed individually with the inode's size. Links straddling a cache-hit boundary cannot be deduplicated across the boundary (the cached total is pre-aggregated) — same scan-order dependence `du` itself has.
+- Cache format now includes file entries and nanosecond mtimes; the existing version check automatically invalidates caches written by older versions.
+
+### Maintenance
+- **Single module tree.** `main.rs` previously declared its own copies of every module alongside `lib.rs`, compiling the whole tree twice and giving the binary distinct copies of library statics (`CACHE_ENABLED`, the UID cache, the cache file lock). The binary now imports from the library crate (CODE_REVIEW.md L1).
+- **Four dependencies removed** (CODE_REVIEW.md L4/L6): `once_cell` and `parking_lot` replaced by `std::sync::LazyLock`/`Mutex`; `fnv` replaced by an inline FNV-1a hasher with identical constants (hash values, cache file names, and entry keys are unchanged); `memmap2` removed along with both cache-IO `unsafe` blocks — cache files are now read with `std::fs::read` and written with buffered write + atomic rename (bincode deserializes the whole buffer either way, so mmap bought nothing and carried a SIGBUS hazard). Run `cargo build` once to refresh `Cargo.lock`.
+- `sysinfo` usage now does a targeted refresh of the current process instead of `System::new_all()` (which enumerated every process, disk, and network interface); the duplicated Unix/Windows `rss_after_phase` bodies were merged (L6).
+- `Args.output` is now `Option<PathBuf>` instead of `Option<String>`; the `--profile` stats file is named after the output file (`results.csv` → `results.stats.json`) instead of a fixed `stats.json` that silently overwrote any existing one (L5).
+- `Cache::load_from_file`/`save_to_file` are now test-only (`#[cfg(test)]`); production IO goes through the atomic-rename path in `cache/mod.rs` (L5). `calculate_path_hash` delegates to `utils::path_hash` instead of duplicating it.
+- Removed tautological `assert!(x || !x)` tests in `memory.rs` (replaced with a real invariant: exceeding the limit implies nearing it) and deleted the unused `tests/util.rs` helper module (L2).
+- Doc fixes (L3): stray code fence in the `Args` doc comment, inaccurate "O(1) memory-mapped load" claim, stale "cache stored in scanned directory" text.
+
+### Performance
+- Incremental-path aggregation maps (`dir_totals`, `directory_children`, restored entries) are plain `HashMap`s instead of `DashMap`s — every write is sequential (walk + aggregation phases) and the only concurrent access is read-only, so the sharding/locking overhead bought nothing (PARALLELISM_REVIEW.md P4). Final sorting uses rayon's `par_sort_by` (P6), and redundant per-entry progress-bar ticks were removed from the walk loops (P8).
+- Work-stealing path (`--threads-strategy work-stealing-uneven`, experimental): large-directory groups are now built in one O(n) indexing pass instead of re-scanning and cloning the whole entry list per large directory (was O(large_dirs × n)); owner UIDs are captured from the same lstat as sizes so `--show-owner` no longer issues a second syscall per entry; `--profile` now reports WalkDir/Aggregation phase timings (CODE_REVIEW.md M4/M5).
+- Incremental path no longer materialises a `Vec<PathBuf>` of every ancestor per file — parent chains are walked in place during aggregation, removing the scan's largest single allocation (CODE_REVIEW.md M6, partial: entries are still collected before aggregation).
+- One `stat` per entry during scanning instead of up to three: size, mtime, nlink, and owner are captured in a single call and reused for cache entries and `--show-owner` (previously `disk_usage` and `get_owner` each issued their own `stat`).
+- Restored cache entries resolve owners from the cached UID instead of re-statting skipped paths.
+- Depth-limited runs (`--depth N`) no longer shrink the saved cache: full subtrees are restored into the cache, and output depth filtering happens at display time as before.
+
 ## [1.4.9] - 2026-03-22
 
 ### Bug Fixes
@@ -429,6 +554,7 @@ Features planned for upcoming releases:
 - **Memory safety** through Rust
 - **Simple CLI interface**
 
+[1.5.0]: https://github.com/greensh16/rudu/compare/v1.4.9...v1.5.0
 [1.4.9]: https://github.com/greensh16/rudu/compare/v1.4.0...v1.4.9
 [1.4.0]: https://github.com/greensh16/rudu/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/greensh16/rudu/compare/v1.2.0...v1.3.0

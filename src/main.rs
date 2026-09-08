@@ -28,44 +28,44 @@ use anyhow::Result;
 use clap::Parser;
 use std::path::Path;
 
-mod utils;
-use utils::{build_exclude_matcher, expand_exclude_patterns, path_depth};
-mod scan;
-use scan::scan_files_and_dirs;
-pub mod cli;
-use cli::Args;
-mod data;
-pub use data::{EntryType, FileEntry};
-pub mod cache;
-mod memory;
-pub mod metrics;
-pub mod output;
-pub mod thread_pool;
-use metrics::{PhaseTimer, ProfileData, print_profile_summary, rss_after_phase, save_stats_json};
-use thread_pool::{ThreadPoolStrategy, configure_pool};
+// All modules live in the library crate (src/lib.rs). Previously main.rs
+// declared its own copies of every module, compiling the whole tree twice
+// and giving the binary distinct copies of library statics.
+use rudu::atime;
+use rudu::cli::Args;
+use rudu::data::{EntryType, FileEntry};
+use rudu::metrics::{
+    PhaseTimer, ProfileData, print_profile_summary, rss_after_phase, save_stats_json,
+};
+use rudu::scan::{self, scan_files_and_dirs};
+use rudu::thread_pool::{ThreadPoolStrategy, configure_pool};
+use rudu::utils::{build_exclude_matcher, expand_exclude_patterns, path_depth};
+use rudu::{memory, output};
 
 /// Sets up the thread pool configuration based on CLI arguments.
 fn setup_thread_pool(args: &Args) -> Result<()> {
-    // Skip global thread pool setup when --threads is specified
-    // as we'll use local thread pools in the scan module instead
-    if args.threads.is_some() {
-        eprintln!(
-            "Using local thread pool with {} threads",
-            args.threads.unwrap()
-        );
+    // An explicit --threads N takes precedence over any strategy: build the
+    // global rayon pool with exactly that many threads. (Previously this
+    // branch returned without configuring anything, silently running on all
+    // cores — including in --memory-limit "HPC" mode.)
+    if let Some(n) = args.threads {
+        if n == 0 {
+            anyhow::bail!("--threads must be greater than 0");
+        }
+        configure_pool(ThreadPoolStrategy::Fixed, n)?;
         return Ok(());
     }
 
-    // Use the new thread pool configuration system for other strategies
+    // Use the thread pool configuration system for the selected strategy
     let n_threads = match args.threads_strategy {
         ThreadPoolStrategy::Default => num_cpus::get(),
         ThreadPoolStrategy::Fixed => {
-            if args.threads.is_none() {
-                eprintln!(
-                    "Warning: --threads-strategy fixed requires --threads N; \
-                     falling back to all CPUs."
-                );
-            }
+            // Unreachable with --threads set (handled above); without it,
+            // fall back to all CPUs with a warning.
+            eprintln!(
+                "Warning: --threads-strategy fixed requires --threads N; \
+                 falling back to all CPUs."
+            );
             num_cpus::get()
         }
         ThreadPoolStrategy::NumCpusMinus1 => std::cmp::max(1, num_cpus::get() - 1),
@@ -77,18 +77,45 @@ fn setup_thread_pool(args: &Args) -> Result<()> {
     Ok(())
 }
 
-/// Processes raw file entries by applying depth filtering, sorting, and show_files flags.
-fn process_entries(root: &Path, args: &Args, raw: Vec<FileEntry>) -> Vec<FileEntry> {
+/// Processes raw file entries by applying depth, access-age, and show_files filters.
+///
+/// `--older-than` is applied here rather than during the scan because a
+/// directory's access age is a rollup over its whole subtree: the entries that
+/// justify keeping a directory row may themselves be filtered out of the
+/// display. A directory therefore survives the filter when *anything* beneath
+/// it is old enough, which is what makes `--older-than` usable as a drill-down
+/// alongside `--depth`.
+///
+/// A file whose atime could not be read is kept: dropping it would silently hide
+/// data from a report whose purpose is to account for everything at risk. A
+/// *directory* with no access age has no leaves beneath it and so nothing at
+/// risk, and is dropped rather than padding the report with empty directories.
+///
+/// `--min-size` applies to files and directories alike. Hiding a small directory
+/// never hides anything the user asked to see: a directory's size is the total
+/// of its whole subtree, so if it is under the threshold every entry beneath it
+/// is too.
+fn process_entries(root: &Path, args: &Args, raw: Vec<FileEntry>, now: u64) -> Vec<FileEntry> {
     raw.into_iter()
         .filter(|entry| {
             // Apply depth filtering
             let depth = path_depth(root, &entry.path);
-            match entry.entry_type {
+            let depth_ok = match entry.entry_type {
                 EntryType::Dir => args.depth.map(|d| depth <= d).unwrap_or(true),
                 EntryType::File => {
                     args.show_files && args.depth.map(|d| depth <= d).unwrap_or(true)
                 }
-            }
+            };
+
+            let age_ok = match (args.older_than, entry.atime) {
+                (None, _) => true,
+                (Some(min_days), Some(at)) => atime::age_days(at, now) >= min_days,
+                (Some(_), None) => entry.entry_type == EntryType::File,
+            };
+
+            let size_ok = args.min_size.is_none_or(|min| entry.size >= min);
+
+            depth_ok && age_ok && size_ok
         })
         .collect()
 }
@@ -97,17 +124,27 @@ fn process_entries(root: &Path, args: &Args, raw: Vec<FileEntry>) -> Vec<FileEnt
 ///
 /// Delegates to the modular output formatters in [`output`] so that both
 /// code paths share the same serialisation logic and schema.
-fn output_results(entries: &[FileEntry], args: &Args, root: &Path) -> Result<()> {
+fn output_results(entries: &[FileEntry], args: &Args, root: &Path, now: u64) -> Result<()> {
     if args.output.is_some() {
-        output::render_csv(entries, args)
+        output::render_csv(entries, args, now)
     } else {
-        output::render_terminal(entries, args, root)
+        output::render_terminal(entries, args, root, now)
     }
 }
 
 fn main() -> Result<()> {
-    let args = Args::parse();
+    let mut args = Args::parse();
+    // Asking to filter by access age without asking to see it would print a
+    // mysteriously short table, so --older-than turns the columns on.
+    if args.older_than.is_some() {
+        args.show_atime = true;
+    }
+    let args = args;
     let root = &args.path;
+
+    // One reference instant for the whole report: ages computed at different
+    // points of a long scan would otherwise disagree across rows.
+    let now = atime::now_unix();
 
     // Initialize profiling if enabled
     let mut profile = if args.profile {
@@ -223,7 +260,21 @@ fn main() -> Result<()> {
         None
     };
 
-    let processed_entries = process_entries(root, &args, scan_result.entries);
+    // Access-age rollups and the summary are computed over the *complete* entry
+    // list, before --depth and --older-than filtering: a directory's oldest
+    // entry and its at-risk bytes come from leaves that the display filters
+    // will often drop, and a summary of the filtered view would be circular.
+    let mut scan_entries = scan_result.entries;
+    if args.show_atime {
+        atime::apply_rollup(&mut scan_entries, root, args.purge_days, now);
+    }
+    let age_summary = if args.show_atime {
+        Some(atime::summarize(&scan_entries, args.purge_days, now))
+    } else {
+        None
+    };
+
+    let processed_entries = process_entries(root, &args, scan_entries, now);
 
     if let (Some(ref mut prof), Some(timer)) = (profile.as_mut(), process_timer) {
         prof.add_phase(timer.finish());
@@ -236,7 +287,13 @@ fn main() -> Result<()> {
         None
     };
 
-    output_results(&processed_entries, &args, root)?;
+    output_results(&processed_entries, &args, root, now)?;
+
+    // Summary goes to stderr, like the banner and cache statistics, so it never
+    // contaminates a piped table or a CSV stream on stdout.
+    if let Some(summary) = age_summary {
+        eprint!("{}", atime::render_summary(&summary, args.purge_days));
+    }
 
     if let (Some(ref mut prof), Some(timer)) = (profile.as_mut(), output_timer) {
         prof.add_phase(timer.finish());
@@ -257,10 +314,10 @@ fn main() -> Result<()> {
         print_profile_summary(&prof);
 
         // Save stats.json if output is being written to a file
-        if let Some(ref output_path) = args.output {
-            if let Err(e) = save_stats_json(std::path::Path::new(output_path), &prof) {
-                eprintln!("Failed to save stats.json: {}", e);
-            }
+        if let Some(ref output_path) = args.output
+            && let Err(e) = save_stats_json(output_path, &prof)
+        {
+            eprintln!("Failed to save stats file: {}", e);
         }
     }
 

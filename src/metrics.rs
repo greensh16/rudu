@@ -25,7 +25,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 use std::time::{Duration, Instant};
-use sysinfo::System;
 
 /// A timer for measuring the duration of a specific phase or operation.
 ///
@@ -197,7 +196,7 @@ impl Default for ProfileData {
 ///
 /// # Platform Support
 ///
-/// - **Linux/macOS**: Reliable RSS values from `/proc/[pid]/status` or `task_info()`
+/// - **Linux/macOS/BSD**: Reliable RSS values from `/proc/[pid]/status` or `task_info()`
 /// - **Windows**: Best-effort support; may have limited accuracy on some versions
 ///
 /// When memory monitoring returns `None`, the monitor should bypass memory checks
@@ -211,47 +210,21 @@ impl Default for ProfileData {
     target_os = "macos",
     target_os = "freebsd",
     target_os = "netbsd",
-    target_os = "openbsd"
+    target_os = "openbsd",
+    target_os = "windows"
 ))]
 pub fn rss_after_phase() -> Option<u64> {
-    let mut system = System::new_all();
-    system.refresh_processes();
+    use sysinfo::{Pid, System};
 
-    let current_pid = std::process::id();
+    // Targeted refresh of just this process — System::new_all() enumerated
+    // every process, disk, and network interface on the machine to read a
+    // single RSS value.
+    let pid = Pid::from(std::process::id() as usize);
+    let mut system = System::new();
+    system.refresh_process(pid);
 
-    // Find the current process
-    for (pid, process) in system.processes() {
-        if pid.as_u32() == current_pid {
-            // sysinfo returns memory in bytes on most platforms
-            // No conversion needed as we want bytes
-            return Some(process.memory());
-        }
-    }
-
-    None
-}
-
-/// Windows implementation of RSS measurement (best-effort)
-///
-/// On Windows, RSS reporting may be less reliable due to differences in
-/// memory management and system API behavior across Windows versions.
-#[cfg(target_os = "windows")]
-pub fn rss_after_phase() -> Option<u64> {
-    let mut system = System::new_all();
-    system.refresh_processes();
-
-    let current_pid = std::process::id();
-
-    // Find the current process
-    for (pid, process) in system.processes() {
-        if pid.as_u32() == current_pid {
-            // sysinfo returns memory in bytes on most platforms
-            // No conversion needed as we want bytes
-            return Some(process.memory());
-        }
-    }
-
-    None
+    // sysinfo returns memory in bytes
+    system.process(pid).map(|p| p.memory())
 }
 
 /// Fallback implementation for unsupported platforms
@@ -320,9 +293,14 @@ pub fn print_profile_summary(profile: &ProfileData) {
 
 /// Saves profiling statistics to a JSON file for scripting integration.
 ///
-/// This function creates a `stats.json` file alongside the main output
-/// when CSV or JSON output is requested. The file contains machine-readable
-/// profiling data that can be used by scripts or other tools.
+/// This function creates a stats file alongside the main output when CSV
+/// output is requested. The file contains machine-readable profiling data
+/// that can be used by scripts or other tools.
+///
+/// The stats file is named after the output file (e.g. `results.csv` →
+/// `results.stats.json`) rather than a fixed `stats.json`, so concurrent runs
+/// writing different outputs to the same directory don't silently overwrite
+/// each other's stats.
 ///
 /// # Arguments
 /// * `output_path` - The path where the main output file is being written
@@ -330,15 +308,11 @@ pub fn print_profile_summary(profile: &ProfileData) {
 ///
 /// # Returns
 /// `Ok(())` if the file was written successfully, or an error if writing failed.
-///
-/// # Example
-/// If the main output is being written to `results.csv`, this function
-/// will create `stats.json` in the same directory.
 pub fn save_stats_json(
     output_path: &Path,
     profile: &ProfileData,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let stats_path = output_path.with_file_name("stats.json");
+    let stats_path = output_path.with_extension("stats.json");
 
     // Create a structured stats object for JSON output
     let stats = serde_json::json!({

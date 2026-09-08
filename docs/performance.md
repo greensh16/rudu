@@ -110,9 +110,9 @@ rudu --no-cache && rudu  # First run rebuilds cache
 ```
 
 #### Cache Location
-- **Primary**: `.rudu-cache.bin` in scanned directory
-- **Fallback**: `~/.cache/rudu/` (XDG cache directory)
-- **Permissions**: Automatic fallback to regular I/O if memory-mapping fails
+- **Primary**: `$RUDU_CACHE_DIR/rudu/` if `RUDU_CACHE_DIR` is set
+- **Default**: `~/.cache/rudu/` (XDG cache directory)
+- Cache files are never written inside the scanned tree (that would perturb the mtimes the cache validates against); one file per scanned root, named by a hash of the root path
 
 ### 3. Incremental Scanning
 
@@ -287,7 +287,6 @@ rudu --threads 4 --profile
 #### 2. Poor Cache Performance
 ```bash
 # Check cache location permissions
-ls -la .rudu-cache.bin
 ls -la ~/.cache/rudu/
 
 # Verify cache TTL settings

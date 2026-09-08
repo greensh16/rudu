@@ -1,167 +1,63 @@
-# Cache Module with Memory-Mapped IO
+# Cache Module
 
-This module provides high-performance cache loading and saving functionality using memory-mapped files for optimal performance with large caches.
+Disk-based caching for incremental scans: rudu stores metadata about scanned
+directories **and files** so that unchanged subtrees can be skipped on
+subsequent runs.
 
-## Features
+## How it works
 
-- **Memory-Mapped IO**: Uses `memmap2` for O(1) load time on large caches
-- **Automatic Fallback**: Falls back to regular file IO if memory-mapping fails
-- **Robust Error Handling**: Gracefully handles corrupt cache files and permission issues
-- **Comprehensive Testing**: Extensive unit tests including edge cases and performance tests
-- **Cross-Platform**: Works on all platforms supported by `memmap2`
+- Cache files are bincode-serialized `Cache` structures (a `CacheHeader` plus
+  a map of path-hash → `CacheEntry`), written atomically (temp file + rename).
+- Files live in a configurable cache directory — `RUDU_CACHE_DIR` if set,
+  otherwise the XDG cache directory (`~/.cache/rudu/`) — **never** inside the
+  scanned tree, since writing there would perturb the mtimes the cache
+  validates against. One file per scanned root, named by the FNV-1a hash of
+  the root path.
+- A subtree is only reused as a cache hit if the directory *and every cached
+  directory beneath it* still match their recorded nanosecond mtime and nlink.
+  This catches structural changes (create/delete/rename) at any depth. The
+  scan root itself is never treated as a hit.
+- In-place modification of an existing file changes no directory mtime and is
+  therefore only picked up when the TTL expires (default 7 days,
+  `--cache-ttl`) or with `--no-cache`.
+
+## Access times
+
+`CacheEntry` stores each entry's raw `atime`, but never a derived rollup: the
+`--purge-days` threshold can change between runs, so directory rollups
+(oldest leaf, at-risk bytes) are recomputed from restored entries every time.
+atime is cached even when `--show-atime` was not requested, so a cache built by
+a plain run still serves a later access-age run.
+
+A restored atime can be older than reality — reading a file updates its atime
+but not its parent's mtime, so the subtree still validates as a hit. Since atime
+only moves forward, this over-states age and therefore purge risk, and never
+reports at-risk data as safe.
+
+## Invalidation
+
+The whole cache is discarded when any of these mismatch: rudu version, TTL,
+root path, or the root directory's own mtime. Individual subtrees are
+rescanned when their directory metadata changes.
 
 ## API
 
-### Core Functions
-
-#### `load_cache(root: &Path) -> Option<HashMap<PathBuf, CacheEntry>>`
-
-Load cache from disk using memory-mapped IO for O(1) access time.
-
-- **Parameters**: `root` - The root path to determine the cache file location
-- **Returns**: `Option<HashMap<PathBuf, CacheEntry>>` - The loaded cache entries, or None if not found/invalid
-- **Performance**: O(1) access time through memory-mapped files
-
-#### `save_cache(root: &Path, cache: &HashMap<PathBuf, CacheEntry>) -> Result<()>`
-
-Save cache to disk using efficient serialization with memory-mapped IO.
-
-- **Parameters**: 
-  - `root` - The root path to determine the cache file location
-  - `cache` - The cache entries to save
-- **Returns**: `Result<()>` - Success or error information
-- **Performance**: Optimized for large caches with memory-mapped writes
-
-## Implementation Details
-
-### Memory-Mapped IO Strategy
-
-1. **Loading**: 
-   - Maps the entire cache file into memory
-   - Deserializes directly from the mapped memory
-   - Zero-copy access to cache data
-
-2. **Saving**:
-   - Attempts memory-mapped write first
-   - Falls back to regular file IO if memory-mapping fails
-   - Ensures data integrity with proper flushing
-
-### Error Handling
-
-- **Corrupt Cache Files**: Returns `None` on load, allowing cache regeneration
-- **Permission Errors**: Automatic fallback to regular file IO
-- **Missing Files**: Returns `None` rather than failing
-- **Invalid Data**: Graceful handling of deserialization errors
-
-### Performance Characteristics
-
-- **Small Caches**: Sub-millisecond load times
-- **Large Caches (10k+ entries)**: O(1) load time regardless of size
-- **Memory Usage**: Minimal overhead due to memory-mapped access
-- **Disk Usage**: Efficient bincode serialization
-
-## Usage Examples
-
-### Basic Usage
-
-```rust
-use rudu::cache::{load_cache, save_cache, CacheEntry, CacheEntryParams};
-use rudu::data::EntryType;
-use std::collections::HashMap;
-use std::path::PathBuf;
-
-// Create cache
-let mut cache = HashMap::new();
-let entry = CacheEntry::new(CacheEntryParams {
-    path: PathBuf::from("file.txt"),
-    size: 1024,
-    mtime: 1234567890,
-    nlink: 1,
-    inode_cnt: Some(1),
-    owner: Some(1000),
-    entry_type: EntryType::File,
-});
-cache.insert(PathBuf::from("file.txt"), entry);
-
-// Save cache
-let root = PathBuf::from(".");
-save_cache(&root, &cache)?;
-
-// Load cache
-if let Some(loaded_cache) = load_cache(&root) {
-    println!("Loaded {} entries", loaded_cache.len());
-}
-```
-
-### Performance Testing
-
-```rust
-// Create large cache
-let mut large_cache = HashMap::new();
-for i in 0u64..100000 {
-    let path = PathBuf::from(format!("file_{}.txt", i));
-    let entry = CacheEntry::new(CacheEntryParams {
-        path: path.clone(),
-        size: i * 1024,
-        mtime: 1234567890 + i,
-        nlink: 1,
-        inode_cnt: Some(1),
-        owner: Some(1000),
-        entry_type: EntryType::File,
-    });
-    large_cache.insert(path, entry);
-}
-
-// Save and measure performance
-let start = std::time::Instant::now();
-save_cache(&root, &large_cache)?;
-println!("Saved in {:?}", start.elapsed());
-
-// Load and measure performance
-let start = std::time::Instant::now();
-let loaded = load_cache(&root).unwrap();
-println!("Loaded in {:?}", start.elapsed()); // O(1) regardless of cache size
-```
-
-## Testing
-
-The cache module includes comprehensive tests covering:
-
-- **Basic Operations**: Save, load, and validation
-- **Edge Cases**: Empty caches, corrupted files, permission errors
-- **Performance**: Large cache handling and timing verification
-- **Unicode Support**: Path names with international characters
-- **Concurrent Access**: Thread safety verification
-- **Error Handling**: Graceful degradation scenarios
-
-Run tests with:
-```bash
-cargo test cache --lib
-```
+- `load_cache(root, ttl_seconds) -> HashMap<PathBuf, CacheEntry>` — returns an
+  empty map if the cache is missing, invalid, or disabled.
+- `save_cache(root, &cache) -> Result<()>` /
+  `save_cache_with_mtime(root, &cache, root_mtime) -> Result<()>`
+- `invalidate_cache(root) -> Result<bool>` — removes the cache file.
+- `set_enabled(bool)` / `is_enabled()` — runtime toggle, used to shed work
+  when nearing a `--memory-limit`.
 
 ## Dependencies
 
-- **memmap2**: Memory-mapped file support
-- **bincode**: Efficient binary serialization
-- **anyhow**: Error handling
-- **tempfile**: Testing utilities (dev-dependency)
+- **bincode** — binary serialization
+- **anyhow** — error handling
+- **tempfile** — testing (dev-dependency)
 
-## Cache File Format
+Run tests with:
 
-Cache files use bincode serialization of `HashMap<PathBuf, CacheEntry>` structures:
-
-- **Format**: Binary (bincode)
-- **Extension**: `.rudu-cache.bin`
-- **Location**: Primary location in scanned directory, fallback to XDG cache directory
-- **Compatibility**: Version-agnostic within the same major version
-
-## Performance Benchmarks
-
-On a typical system with SSD storage:
-
-- **Small Cache (100 entries)**: ~1ms load time
-- **Medium Cache (1,000 entries)**: ~5ms load time  
-- **Large Cache (10,000 entries)**: ~20ms load time
-- **Very Large Cache (100,000 entries)**: ~200ms load time
-
-Load times scale logarithmically with cache size due to memory-mapped access patterns.
+```bash
+cargo test cache
+```

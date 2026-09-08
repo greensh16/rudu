@@ -1,7 +1,10 @@
 name: Release
 
-# Triggered when a version tag is pushed (e.g. v1.4.9).
-# Tags should only be pushed after CI is green on main.
+# Triggered when a version tag is pushed (e.g. v1.5.0).
+#
+# The test job below re-runs the suite against the tagged commit rather than
+# trusting that CI was green on main: a tag can point at any commit, and
+# shipping binaries built from an untested one is the failure this guards.
 on:
   push:
     tags: ["v*"]
@@ -10,10 +13,48 @@ env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
 
+permissions:
+  contents: read
+
 jobs:
+  # ── Verify the tagged commit ─────────────────────────────────────────────────
+  test:
+    name: Test tagged commit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-test
+
+      - name: Test
+        run: cargo test --verbose
+
+      # The tag and the crate version must agree, or `cargo install rudu` and
+      # the published binaries end up describing different builds. rudu also
+      # stamps its version into every cache file header and invalidates on
+      # mismatch, so a wrong version silently changes cache behaviour.
+      - name: Verify tag matches Cargo.toml version
+        run: |
+          crate_version=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[0].version')
+          tag_version="${GITHUB_REF_NAME#v}"
+          echo "Cargo.toml: $crate_version"
+          echo "Tag:        $tag_version"
+          if [ "$crate_version" != "$tag_version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match Cargo.toml version $crate_version"
+            exit 1
+          fi
+
   # ── Release binary builds ────────────────────────────────────────────────────
   build-release:
     name: Release binary (${{ matrix.target }})
+    needs: [test]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -32,6 +73,10 @@ jobs:
             target: aarch64-apple-darwin
             artifact: rudu-macos-arm64
 
+          # An Intel macOS build (x86_64-apple-darwin on the macos-13 runner)
+          # would slot in here, at the cost of blocking every binary in the
+          # release if that runner image is retired.
+
     steps:
       - uses: actions/checkout@v4
 
@@ -42,7 +87,9 @@ jobs:
 
       - name: Install cross (for aarch64 Linux)
         if: matrix.cross
-        run: cargo install cross --git https://github.com/cross-rs/cross
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
 
       - name: Cache
         uses: Swatinem/rust-cache@v2
@@ -62,11 +109,18 @@ jobs:
           cp target/${{ matrix.target }}/release/rudu ${{ matrix.artifact }}
           chmod +x ${{ matrix.artifact }}
 
+      # HPC users often fetch these onto a login node over plain HTTP proxies,
+      # so publish a checksum they can verify against.
+      - name: Checksum
+        run: shasum -a 256 ${{ matrix.artifact }} > ${{ matrix.artifact }}.sha256
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: ${{ matrix.artifact }}
+          path: |
+            ${{ matrix.artifact }}
+            ${{ matrix.artifact }}.sha256
 
   # ── GitHub Release ────────────────────────────────────────────────────────────
   release:
@@ -82,23 +136,24 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: dist/
+          merge-multiple: true
 
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/**/*
+          files: dist/*
           generate_release_notes: true
+          fail_on_unmatched_files: true
 
   # ── crates.io publish ─────────────────────────────────────────────────────────
+  # Deliberately disabled: releases are published as binaries only. Enable by
+  # uncommenting and adding a CARGO_REGISTRY_TOKEN secret.
   #publish-crates:
   #  name: Publish to crates.io
   #  runs-on: ubuntu-22.04
   #  needs: [build-release]
   #  steps:
   #    - uses: actions/checkout@v4
-  #
-  #    - name: Install Rust toolchain
-  #      uses: dtolnay/rust-toolchain@stable
-  #
+  #    - uses: dtolnay/rust-toolchain@stable
   #    - name: Publish
   #      run: cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }}

@@ -1,7 +1,12 @@
 # rudu
 
-![workflow](https://github.com/greensh16/rudu/actions/workflows/rust_check.yml/badge.svg)
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.15914603.svg)](https://doi.org/10.5281/zenodo.19160335)
+[![CI](https://github.com/greensh16/rudu/actions/workflows/ci.yml/badge.svg)](https://github.com/greensh16/rudu/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/greensh16/rudu)](https://github.com/greensh16/rudu/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/greensh16/rudu/total)](https://github.com/greensh16/rudu/releases)
+[![License](https://img.shields.io/github/license/greensh16/rudu)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS-lightgrey)](docs/INSTALLATION.md)
+[![Rust](https://img.shields.io/badge/rust-2024%20edition-orange)](https://doc.rust-lang.org/edition-guide/rust-2024/index.html)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.19160335.svg)](https://doi.org/10.5281/zenodo.19160335)
 
 <div align="center">
   <img src="https://github.com/user-attachments/assets/721ab886-1d01-4572-9f9f-63dc77ef2698" width="200" height="200" />
@@ -18,6 +23,8 @@ rudu                                          # scan current directory
 rudu /data --depth 2 --sort size              # top 2 levels, largest first
 rudu /project --exclude .git --output out.csv # exclude .git, export to CSV
 rudu /lustre --memory-limit 900 --no-cache    # HPC cluster with 1 GB job limit
+rudu /scratch/ab12 --older-than 100 --sort size  # what a 100-day purge will take
+rudu /project --min-size 10MB                 # hide anything under 10 MB
 ```
 
 For the full options reference and annotated examples, see [docs/basic-usage.md](docs/basic-usage.md).
@@ -28,9 +35,10 @@ For the full options reference and annotated examples, see [docs/basic-usage.md]
 
 - **Parallel scanning** — work-stealing thread pool via `rayon`; configurable with `--threads N`
 - **True disk usage** — `st_blocks × 512`, same as `du`
-- **Depth & exclusion filtering** — `--depth N`, `--exclude PATTERN`
+- **Depth, size & exclusion filtering** — `--depth N`, `--min-size 10MB`, `--exclude PATTERN`
 - **Flexible output** — terminal table or `--output report.csv`
 - **Owner & inode info** — `--show-owner`, `--show-inodes`
+- **Access-age reporting** — `--show-atime` shows how close data is to a scratch purge policy (NCI `/scratch`: 100 days); `--older-than`, `--purge-days`
 - **Incremental caching** — skips unchanged subtrees on repeat scans; `--no-cache`, `--cache-ttl`
 - **Memory limiting** — `--memory-limit MB` for HPC/SLURM jobs; graceful degradation at 95 % of limit
 - **Performance profiling** — `--profile` prints per-phase timing

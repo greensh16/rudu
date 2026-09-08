@@ -25,7 +25,6 @@ use std::path::PathBuf;
 ///
 /// This struct defines all available command-line options and flags
 /// for controlling the behavior of the file system scan and output formatting.
-/// ```
 #[derive(Parser, Debug, Clone)]
 #[command(name = "rudu", author = "Sam Green", version = env!("CARGO_PKG_VERSION"), about)]
 pub struct Args {
@@ -55,7 +54,7 @@ pub struct Args {
 
     /// Write output to a CSV file instead of stdout
     #[arg(long, value_name = "FILE")]
-    pub output: Option<String>,
+    pub output: Option<PathBuf>,
 
     /// Limit the number of CPU threads used (default: use all available)
     #[arg(long, value_name = "N")]
@@ -85,6 +84,31 @@ pub struct Args {
     #[arg(long, value_name = "MB")]
     pub memory_limit: Option<u64>,
 
+    /// Show last access time (atime) and access age in days
+    ///
+    /// For directories this reports the *oldest* entry in the subtree — the one
+    /// that will be purged first — plus the bytes beneath it already past the
+    /// `--purge-days` threshold.
+    #[arg(long, default_value_t = false)]
+    pub show_atime: bool,
+
+    /// Access-age threshold in days for "at risk" reporting (NCI /scratch: 100)
+    #[arg(long, value_name = "DAYS", default_value_t = crate::atime::DEFAULT_PURGE_DAYS)]
+    pub purge_days: u64,
+
+    /// Only show entries not accessed for at least DAYS days (implies --show-atime)
+    #[arg(long, value_name = "DAYS")]
+    pub older_than: Option<u64>,
+
+    /// Hide entries smaller than SIZE (e.g. 10MB, 1.5GiB, 4096)
+    ///
+    /// A display filter only: hidden entries still count toward their parent
+    /// directories' totals, so the sizes shown stay correct. Units are decimal
+    /// by default (KB/MB/GB = powers of 1000), matching the sizes rudu prints;
+    /// use KiB/MiB/GiB for powers of 1024.
+    #[arg(long, value_name = "SIZE", value_parser = crate::utils::parse_size)]
+    pub min_size: Option<u64>,
+
     /// Memory check interval in milliseconds for memory monitoring (hidden experimental flag)
     #[arg(
         long = "memory-check-interval-ms",
@@ -93,6 +117,20 @@ pub struct Args {
         hide = true
     )]
     pub memory_check_interval_ms: u64,
+}
+
+impl Default for Args {
+    /// The same values `rudu` runs with when given no arguments.
+    ///
+    /// Derived by parsing an empty argument list rather than repeating the
+    /// literals, so this can never drift from the `#[arg(default_value_t)]`
+    /// attributes above. Every field has a default, so the parse cannot fail.
+    ///
+    /// Benchmarks and tests build `Args` with `..Default::default()` so that
+    /// adding a new flag does not break every call site.
+    fn default() -> Self {
+        Args::try_parse_from(["rudu"]).expect("Args has a default for every field")
+    }
 }
 
 /// Enum for specifying how to sort scan results.
@@ -115,6 +153,11 @@ pub enum SortKey {
 /// * `owner` - Optional owner username
 /// * `path` - Full path to the file or directory
 /// * `inodes` - Optional inode count for directories
+/// * `atime` - Last access date (`YYYY-MM-DD`), only with `--show-atime`
+/// * `atime_unix` - Last access time as Unix seconds, only with `--show-atime`
+/// * `age_days` - Whole days since last access, only with `--show-atime`
+/// * `at_risk_bytes` - Directories only: bytes past the `--purge-days`
+///   threshold beneath this directory
 #[derive(Debug, serde::Serialize)]
 pub struct CsvEntry {
     pub entry_type: String,
@@ -123,6 +166,10 @@ pub struct CsvEntry {
     pub owner: Option<String>,
     pub path: String,
     pub inodes: Option<u64>,
+    pub atime: Option<String>,
+    pub atime_unix: Option<u64>,
+    pub age_days: Option<u64>,
+    pub at_risk_bytes: Option<u64>,
 }
 
 #[cfg(test)]
@@ -152,17 +199,72 @@ mod tests {
         assert_eq!(args.path, PathBuf::from("."));
         assert_eq!(args.depth, None);
         assert_eq!(args.sort, SortKey::Name);
-        assert_eq!(args.show_files, true);
+        assert!(args.show_files);
         assert_eq!(args.exclude, Vec::<String>::new());
-        assert_eq!(args.show_owner, false);
+        assert!(!args.show_owner);
         assert_eq!(args.output, None);
         assert_eq!(args.threads, None);
-        assert_eq!(args.show_inodes, false);
-        assert_eq!(args.no_cache, false);
+        assert!(!args.show_inodes);
+        assert!(!args.no_cache);
         assert_eq!(args.cache_ttl, 604800);
-        assert_eq!(args.profile, false);
+        assert!(!args.profile);
         assert_eq!(args.memory_limit, None);
         assert_eq!(args.memory_check_interval_ms, 200);
+        assert!(!args.show_atime);
+        assert_eq!(args.purge_days, 100);
+        assert_eq!(args.older_than, None);
+        assert_eq!(args.min_size, None);
+    }
+
+    #[test]
+    fn test_default_impl_matches_cli_defaults() {
+        // Guards the `..Default::default()` used across benches and tests: if
+        // Default ever drifted from the parsed defaults, those call sites would
+        // silently benchmark something other than what `rudu` actually runs.
+        let parsed = Args::try_parse_from(["rudu"]).unwrap();
+        let defaulted = Args::default();
+
+        assert_eq!(parsed.path, defaulted.path);
+        assert_eq!(parsed.sort, defaulted.sort);
+        assert_eq!(parsed.show_files, defaulted.show_files);
+        assert_eq!(parsed.cache_ttl, defaulted.cache_ttl);
+        assert_eq!(parsed.purge_days, defaulted.purge_days);
+        assert_eq!(
+            parsed.memory_check_interval_ms,
+            defaulted.memory_check_interval_ms
+        );
+    }
+
+    #[test]
+    fn test_min_size_flag_parsing() {
+        let args = Args::try_parse_from(["rudu", "--min-size", "10MB"]).unwrap();
+        assert_eq!(args.min_size, Some(10_000_000));
+
+        // Binary units are available for anyone who wants powers of 1024.
+        let args = Args::try_parse_from(["rudu", "--min-size", "1GiB"]).unwrap();
+        assert_eq!(args.min_size, Some(1_073_741_824));
+
+        // A bare number is a byte count.
+        let args = Args::try_parse_from(["rudu", "--min-size", "4096"]).unwrap();
+        assert_eq!(args.min_size, Some(4096));
+
+        // The parser rejects nonsense at the CLI boundary rather than silently
+        // filtering on 0 and showing everything.
+        assert!(Args::try_parse_from(["rudu", "--min-size", "big"]).is_err());
+        assert!(Args::try_parse_from(["rudu", "--min-size", "10 flurbs"]).is_err());
+    }
+
+    #[test]
+    fn test_atime_flag_parsing() {
+        let args = Args::try_parse_from(["rudu", "--show-atime", "--older-than", "100"]).unwrap();
+        assert!(args.show_atime);
+        assert_eq!(args.older_than, Some(100));
+
+        // A site with a different policy window
+        let args = Args::try_parse_from(["rudu", "--purge-days", "30"]).unwrap();
+        assert_eq!(args.purge_days, 30);
+
+        assert!(Args::try_parse_from(["rudu", "--older-than", "soon"]).is_err());
     }
 
     #[test]

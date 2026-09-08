@@ -3,7 +3,6 @@ use rudu::Args;
 use rudu::cli::SortKey;
 use rudu::memory::MemoryMonitor;
 use rudu::scan::{scan_files_and_dirs, scan_files_and_dirs_with_memory_monitor};
-use rudu::thread_pool::ThreadPoolStrategy;
 use rudu::utils::build_exclude_matcher;
 use std::fs;
 use std::path::Path;
@@ -41,20 +40,12 @@ fn memory_monitoring_overhead_benchmark(c: &mut Criterion) {
 
     let base_args = Args {
         path: root.to_path_buf(),
-        depth: None,
         sort: SortKey::Size,
         show_files: false,
-        exclude: vec![],
-        show_owner: false,
-        output: None,
-        threads: None,
         show_inodes: true,
-        threads_strategy: ThreadPoolStrategy::Default,
-        no_cache: true, // Disable cache to ensure consistent benchmark
-        cache_ttl: 604800,
-        profile: false,
-        memory_limit: Some(1000),      // 1GB limit (generous for this test)
-        memory_check_interval_ms: 200, // Default interval
+        no_cache: true,           // Disable cache to ensure consistent benchmark
+        memory_limit: Some(1000), // 1GB limit (generous for this test)
+        ..Default::default()
     };
 
     let exclude_matcher = build_exclude_matcher(&[]).unwrap();
@@ -115,20 +106,13 @@ fn memory_monitoring_accuracy_benchmark(c: &mut Criterion) {
 
     let args = Args {
         path: root.to_path_buf(),
-        depth: None,
         sort: SortKey::Size,
         show_files: false,
-        exclude: vec![],
-        show_owner: false,
-        output: None,
-        threads: None,
         show_inodes: true,
-        threads_strategy: ThreadPoolStrategy::Default,
         no_cache: true,
-        cache_ttl: 604800,
-        profile: false,
         memory_limit: Some(50), // Very low limit to test monitoring accuracy
         memory_check_interval_ms: 100, // Frequent checks for accuracy
+        ..Default::default()
     };
 
     let exclude_matcher = build_exclude_matcher(&[]).unwrap();
@@ -162,20 +146,12 @@ fn memory_check_interval_tuning_benchmark(c: &mut Criterion) {
 
     let base_args = Args {
         path: root.to_path_buf(),
-        depth: None,
         sort: SortKey::Size,
         show_files: false,
-        exclude: vec![],
-        show_owner: false,
-        output: None,
-        threads: None,
         show_inodes: true,
-        threads_strategy: ThreadPoolStrategy::Default,
         no_cache: true,
-        cache_ttl: 604800,
-        profile: false,
         memory_limit: Some(2000), // Large enough to not interfere
-        memory_check_interval_ms: 200,
+        ..Default::default()
     };
 
     let exclude_matcher = build_exclude_matcher(&[]).unwrap();
@@ -224,20 +200,12 @@ fn one_percent_overhead_validation_benchmark(c: &mut Criterion) {
 
     let args = Args {
         path: root.to_path_buf(),
-        depth: None,
         sort: SortKey::Size,
         show_files: false,
-        exclude: vec![],
-        show_owner: false,
-        output: None,
-        threads: None,
         show_inodes: true,
-        threads_strategy: ThreadPoolStrategy::Default,
-        no_cache: true, // Disable cache for consistent measurements
-        cache_ttl: 604800,
-        profile: false,
+        no_cache: true,           // Disable cache for consistent measurements
         memory_limit: Some(4000), // High limit to avoid triggering limits
-        memory_check_interval_ms: 200, // Default interval
+        ..Default::default()
     };
 
     let exclude_matcher = build_exclude_matcher(&[]).unwrap();

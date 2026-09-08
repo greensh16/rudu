@@ -21,6 +21,7 @@ fn main() {
         inode_cnt: Some(1),
         owner: Some(1000),
         entry_type: rudu::data::EntryType::File,
+        atime: Some(1234567890),
     });
     test_cache.insert(PathBuf::from("test_file.txt"), entry);
 

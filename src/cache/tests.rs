@@ -1,4 +1,4 @@
-//! Unit tests for the cache loader and writer with memory-mapped IO
+//! Unit tests for the cache loader and writer
 
 use super::*;
 use crate::cache::model::{CacheEntry, CacheEntryParams};
@@ -28,6 +28,11 @@ pub fn safe_lock<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 /// bumps the directory mtime, causing `load_cache` to see a mismatch and return empty.
 struct TestCacheGuard {
     /// Where RUDU_CACHE_DIR points — cache files land here.
+    ///
+    /// Never read: it is held so that its `Drop` removes the directory when the
+    /// guard goes out of scope. Dropping the field would delete the cache
+    /// directory while the test is still using it.
+    #[allow(dead_code)]
     cache_dir: tempfile::TempDir,
     /// The "scanned root" passed to save_cache / load_cache.
     root_dir: tempfile::TempDir,
@@ -131,6 +136,7 @@ fn test_save_and_load_cache_with_entries() {
         inode_cnt: Some(42),
         owner: Some(1000),
         entry_type: EntryType::File,
+        atime: None,
     });
 
     let entry2 = CacheEntry::new(CacheEntryParams {
@@ -141,6 +147,7 @@ fn test_save_and_load_cache_with_entries() {
         inode_cnt: Some(100),
         owner: Some(1001),
         entry_type: EntryType::Dir,
+        atime: None,
     });
 
     cache.insert(PathBuf::from("test1.txt"), entry1.clone());
@@ -191,6 +198,7 @@ fn test_save_and_load_large_cache() {
             } else {
                 EntryType::Dir
             },
+            atime: None,
         });
         cache.insert(path, entry);
     }
@@ -226,6 +234,7 @@ fn test_memory_mapped_io_performance() {
             inode_cnt: Some(i),
             owner: Some(1000),
             entry_type: EntryType::File,
+            atime: None,
         });
         cache.insert(path, entry);
     }
@@ -243,8 +252,8 @@ fn test_memory_mapped_io_performance() {
     // Verify correctness
     assert_eq!(loaded.len(), 1000);
 
-    // These are rough performance checks - in practice, memory-mapped IO
-    // should be very fast, especially for loading
+    // These are rough performance checks — plain buffered IO on a 1000-entry
+    // cache should be comfortably within these bounds
     assert!(save_duration.as_millis() < 1000); // Should save in under 1 second
     assert!(load_duration.as_millis() < 100); // Should load in under 100ms
 }
@@ -294,6 +303,7 @@ fn test_entry_validation() {
         inode_cnt: Some(42),
         owner: Some(1000),
         entry_type: EntryType::File,
+        atime: None,
     });
 
     cache.insert(PathBuf::from("test.txt"), entry);
@@ -338,6 +348,7 @@ fn test_cache_with_complex_paths() {
             inode_cnt: Some(i as u64),
             owner: Some(1000),
             entry_type: EntryType::File,
+            atime: None,
         });
         cache.insert(path.clone(), entry);
     }
@@ -364,7 +375,7 @@ fn test_cache_with_unicode_paths() {
     let mut cache = HashMap::new();
 
     // Test with Unicode path names
-    let unicode_paths = vec![
+    let unicode_paths = [
         PathBuf::from("файл.txt"),     // Russian
         PathBuf::from("文件.txt"),     // Chinese
         PathBuf::from("ファイル.txt"), // Japanese
@@ -383,6 +394,7 @@ fn test_cache_with_unicode_paths() {
             inode_cnt: Some(i as u64),
             owner: Some(1000),
             entry_type: EntryType::File,
+            atime: None,
         });
         cache.insert(path.clone(), entry);
     }
@@ -417,6 +429,7 @@ fn test_cache_with_zero_size_files() {
         inode_cnt: Some(0),
         owner: Some(1000),
         entry_type: EntryType::File,
+        atime: None,
     });
 
     cache.insert(PathBuf::from("empty.txt"), entry);
@@ -450,6 +463,7 @@ fn test_cache_concurrent_access() {
             inode_cnt: Some(i),
             owner: Some(1000),
             entry_type: EntryType::File,
+            atime: None,
         });
         cache.insert(path, entry);
     }
@@ -494,6 +508,7 @@ fn test_cache_edge_cases() {
         inode_cnt: Some(42),
         owner: Some(1000),
         entry_type: EntryType::File,
+        atime: None,
     });
     cache.insert(PathBuf::from(""), entry);
 
@@ -512,6 +527,7 @@ fn test_cache_edge_cases() {
         inode_cnt: Some(100),
         owner: Some(1001),
         entry_type: EntryType::File,
+        atime: None,
     });
     cache.insert(long_path.clone(), entry);
 
@@ -539,6 +555,7 @@ fn test_cache_invalidation_integration() {
         inode_cnt: Some(42),
         owner: Some(1000),
         entry_type: EntryType::File,
+        atime: None,
     });
     cache.insert(PathBuf::from("test.txt"), entry);
 

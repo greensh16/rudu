@@ -6,6 +6,9 @@ use std::io::Read;
 use std::path::PathBuf;
 use tempfile::NamedTempFile;
 
+/// Fixed reference instant so rendered access ages are deterministic.
+const NOW: u64 = 1_000 * 86_400;
+
 fn make_test_entries() -> Vec<FileEntry> {
     vec![
         FileEntry {
@@ -14,6 +17,8 @@ fn make_test_entries() -> Vec<FileEntry> {
             owner: Some("testuser".to_string()),
             inodes: Some(5),
             entry_type: EntryType::Dir,
+            atime: None,
+            at_risk_bytes: None,
         },
         FileEntry {
             path: PathBuf::from("/test/file1.txt"),
@@ -21,6 +26,8 @@ fn make_test_entries() -> Vec<FileEntry> {
             owner: Some("testuser".to_string()),
             inodes: None,
             entry_type: EntryType::File,
+            atime: None,
+            at_risk_bytes: None,
         },
     ]
 }
@@ -42,6 +49,10 @@ fn make_args(root: PathBuf) -> Args {
         profile: false,
         memory_limit: None,
         memory_check_interval_ms: 200,
+        show_atime: false,
+        purge_days: 100,
+        older_than: None,
+        min_size: None,
     }
 }
 
@@ -52,9 +63,9 @@ fn test_csv_renderer_produces_expected_schema() {
     let tmp_path = tmp.path().to_path_buf();
 
     let mut args = make_args(PathBuf::from("/test"));
-    args.output = Some(tmp_path.to_string_lossy().into_owned());
+    args.output = Some(tmp_path.clone());
 
-    let result = csv::render(&entries, &args);
+    let result = csv::render(&entries, &args, NOW);
     assert!(
         result.is_ok(),
         "csv::render returned an error: {:?}",
@@ -104,6 +115,8 @@ fn test_csv_renderer_handles_none_owner_and_inodes() {
             owner: None,
             inodes: None,
             entry_type: EntryType::File,
+            atime: None,
+            at_risk_bytes: None,
         },
         FileEntry {
             path: PathBuf::from("/test/dir-no-meta"),
@@ -111,6 +124,8 @@ fn test_csv_renderer_handles_none_owner_and_inodes() {
             owner: None,
             inodes: None,
             entry_type: EntryType::Dir,
+            atime: None,
+            at_risk_bytes: None,
         },
     ];
 
@@ -118,9 +133,9 @@ fn test_csv_renderer_handles_none_owner_and_inodes() {
     let tmp_path = tmp.path().to_path_buf();
 
     let mut args = make_args(PathBuf::from("/test"));
-    args.output = Some(tmp_path.to_string_lossy().into_owned());
+    args.output = Some(tmp_path.clone());
 
-    let result = csv::render(&entries, &args);
+    let result = csv::render(&entries, &args, NOW);
     assert!(
         result.is_ok(),
         "csv::render should not error on None fields: {:?}",
@@ -152,7 +167,7 @@ fn test_csv_renderer_writes_to_stdout_when_no_output_path() {
     let entries = make_test_entries();
     let args = make_args(PathBuf::from("/test")); // output: None
 
-    let result = csv::render(&entries, &args);
+    let result = csv::render(&entries, &args, NOW);
     assert!(
         result.is_ok(),
         "csv::render with output=None should succeed: {:?}",
@@ -167,7 +182,7 @@ fn test_terminal_renderer_works() {
     let args = make_args(root.clone());
 
     // terminal::render writes to stdout; verify it doesn't error
-    let result = terminal::render(&entries, &args, &root);
+    let result = terminal::render(&entries, &args, &root, NOW);
     assert!(
         result.is_ok(),
         "terminal::render returned an error: {:?}",

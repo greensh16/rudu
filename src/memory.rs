@@ -19,10 +19,12 @@ impl MemoryMonitor {
 
     /// Create a new MemoryMonitor with the specified limit in MB and check interval in ms
     pub fn new_with_interval(limit_mb: u64, check_interval_ms: u64) -> Self {
-        let mut system = System::new_all();
-        system.refresh_processes();
-
         let pid = Pid::from(std::process::id() as usize);
+        // Targeted refresh of just this process — System::new_all() would
+        // enumerate every process, disk, and network interface on the machine.
+        let mut system = System::new();
+        system.refresh_process(pid);
+
         let check_interval = Duration::from_millis(check_interval_ms);
 
         Self {
@@ -71,8 +73,7 @@ impl MemoryMonitor {
     /// Get the current RSS memory usage, with throttling to minimize overhead.
     ///
     /// Both code paths use the same `self.system` instance with a targeted
-    /// `refresh_process` call, avoiding the expensive `System::new_all()` that
-    /// `rss_after_phase` uses and keeping readings consistent.
+    /// `refresh_process` call, keeping readings cheap and consistent.
     ///
     /// Returns None if RSS is not available on this platform, signaling that
     /// memory monitoring should be bypassed entirely.
@@ -169,12 +170,16 @@ mod tests {
     fn test_memory_monitor_basic_functionality() {
         let mut monitor = MemoryMonitor::new(1); // 1MB limit (very small for testing)
 
-        // These should not panic and return boolean values
+        // Must not panic; with a 1 MB limit, any real RSS reading exceeds it,
+        // and a None reading bypasses both checks (returns false).
         let exceeds = monitor.exceeds_limit();
         let nearing = monitor.nearing_limit();
-
-        assert!(exceeds || !exceeds); // Just ensure it returns a boolean
-        assert!(nearing || !nearing); // Just ensure it returns a boolean
+        if exceeds {
+            assert!(
+                nearing,
+                "an RSS reading at/above 100% of the limit is necessarily above 95%"
+            );
+        }
     }
 
     #[test]
@@ -220,13 +225,13 @@ mod tests {
                     assert!(bytes > 0, "Memory usage should be positive on Unix systems");
                     println!("✅ Unix MemoryMonitor working: {} bytes", bytes);
 
-                    // Test limit checking with actual memory values
+                    // Limit checks must not panic with real readings; at or
+                    // above 100% of the limit implies at or above 95%.
                     let exceeds = monitor.exceeds_limit();
                     let nearing = monitor.nearing_limit();
-
-                    // These should return valid boolean values without panicking
-                    assert!(!exceeds || exceeds); // Just verify boolean
-                    assert!(!nearing || nearing); // Just verify boolean
+                    if exceeds {
+                        assert!(nearing, "exceeds_limit implies nearing_limit");
+                    }
                 }
                 None => {
                     println!(
@@ -268,13 +273,13 @@ mod tests {
                         bytes
                     );
 
-                    // Test limit checking with actual memory values
+                    // Limit checks must not panic with real readings; at or
+                    // above 100% of the limit implies at or above 95%.
                     let exceeds = monitor.exceeds_limit();
                     let nearing = monitor.nearing_limit();
-
-                    // These should return valid boolean values
-                    assert!(!exceeds || exceeds);
-                    assert!(!nearing || nearing);
+                    if exceeds {
+                        assert!(nearing, "exceeds_limit implies nearing_limit");
+                    }
                 }
                 None => {
                     println!(
@@ -338,13 +343,13 @@ mod tests {
             // Test that None RSS values are handled correctly across all platforms
             let mut monitor = MemoryMonitor::new(10); // Very small limit
 
-            // Even with a tiny limit, if RSS returns None, we should bypass checks
+            // Must not panic regardless of whether RSS is readable; when a
+            // real reading exceeds the tiny limit it must also be "nearing".
             let exceeds = monitor.exceeds_limit();
             let nearing = monitor.nearing_limit();
-
-            // Results depend on platform, but should never panic
-            assert!(!exceeds || exceeds); // Boolean check
-            assert!(!nearing || nearing); // Boolean check
+            if exceeds {
+                assert!(nearing, "exceeds_limit implies nearing_limit");
+            }
 
             println!("✅ MemoryMonitor handles platform differences gracefully");
         }

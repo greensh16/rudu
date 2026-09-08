@@ -13,6 +13,10 @@ use std::path::PathBuf;
 /// * `owner` - Optional owner (username) of the file/directory
 /// * `inodes` - Optional number of inodes (files/subdirectories) for directories
 /// * `entry_type` - Type of entry (file or directory)
+/// * `atime` - Optional last-access time (Unix seconds); for directories this
+///   is the *oldest* access time in the subtree, see [`crate::atime`]
+/// * `at_risk_bytes` - Directories only: bytes under this directory belonging
+///   to files older than the access-age policy threshold
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct FileEntry {
     pub path: PathBuf,
@@ -20,6 +24,21 @@ pub struct FileEntry {
     pub owner: Option<String>,
     pub inodes: Option<u64>,
     pub entry_type: EntryType,
+    /// Last access time in seconds since the Unix epoch.
+    ///
+    /// For a file this is its own `st_atime`; `None` if the stat failed. For a
+    /// directory, [`crate::atime::apply_rollup`] replaces the scan's raw value
+    /// with the *minimum* atime over every leaf in its subtree — the entry that
+    /// will be purged first — or `None` when the subtree holds no leaves at all.
+    ///
+    /// Always populated by the scan (it costs nothing: the same `lstat` already
+    /// supplies size and mtime). Whether it is *displayed* is `--show-atime`'s
+    /// job.
+    pub atime: Option<u64>,
+    /// Bytes beneath this directory belonging to leaves at or past the
+    /// access-age threshold (`--purge-days`). `None` for files, and for
+    /// directories until [`crate::atime::apply_rollup`] has run.
+    pub at_risk_bytes: Option<u64>,
 }
 
 /// Represents the type of file system entry.
@@ -60,6 +79,8 @@ mod tests {
             owner: Some("user".to_string()),
             inodes: None,
             entry_type: EntryType::File,
+            atime: None,
+            at_risk_bytes: None,
         };
 
         assert_eq!(entry.size, 1024);

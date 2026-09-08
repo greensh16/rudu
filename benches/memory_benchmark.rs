@@ -17,7 +17,6 @@ struct MemoryUsage {
     peak_rss: u64,  // Peak resident set size in bytes
     peak_vms: u64,  // Peak virtual memory size in bytes
     start_rss: u64, // RSS at start
-    start_vms: u64, // VMS at start
 }
 
 impl MemoryUsage {
@@ -27,7 +26,6 @@ impl MemoryUsage {
             peak_rss: start_rss,
             peak_vms: start_vms,
             start_rss,
-            start_vms,
         }
     }
 
@@ -125,6 +123,7 @@ fn memory_benchmark_small_scan(c: &mut Criterion) {
         no_cache: false,
         cache_ttl: 604800, // 7 days
         profile: false,
+        ..Default::default()
     };
 
     let exclude_matcher = build_exclude_matcher(&[]).unwrap();
@@ -180,6 +179,7 @@ fn memory_benchmark_large_scan(c: &mut Criterion) {
         no_cache: false,
         cache_ttl: 604800, // 7 days
         profile: false,
+        ..Default::default()
     };
 
     let exclude_matcher = build_exclude_matcher(&[]).unwrap();
@@ -235,6 +235,7 @@ fn memory_benchmark_cache_operations(c: &mut Criterion) {
         no_cache: false,
         cache_ttl: 604800, // 7 days
         profile: false,
+        ..Default::default()
     };
 
     let exclude_matcher = build_exclude_matcher(&[]).unwrap();
@@ -305,6 +306,7 @@ fn memory_benchmark_threaded_scan(c: &mut Criterion) {
         no_cache: false,
         cache_ttl: 604800, // 7 days
         profile: false,
+        ..Default::default()
     };
 
     let exclude_matcher = build_exclude_matcher(&[]).unwrap();

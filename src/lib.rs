@@ -11,6 +11,7 @@
 //!
 //! # Modules
 //!
+//! - [`atime`]: Access-age reporting against a scratch purge policy
 //! - [`cache`]: Disk-based caching system for improved performance
 //! - [`data`]: Core data structures (`FileEntry`, `EntryType`)
 //! - [`cli`]: Command-line interface definitions
@@ -19,6 +20,7 @@
 //! - [`thread_pool`]: Thread pool configuration strategies for performance optimization
 //! - [`utils`]: Utility functions for disk usage and file operations
 
+pub mod atime;
 pub mod cache;
 pub mod cli;
 pub mod data;

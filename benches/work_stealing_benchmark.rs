@@ -130,6 +130,7 @@ fn work_stealing_benchmark(c: &mut Criterion) {
             no_cache: false,
             cache_ttl: 604800,
             profile: false,
+            ..Default::default()
         };
 
         let exclude_matcher = build_exclude_matcher(&[]).unwrap();
@@ -165,6 +166,7 @@ fn work_stealing_benchmark(c: &mut Criterion) {
             no_cache: false,
             cache_ttl: 604800,
             profile: false,
+            ..Default::default()
         };
 
         group.bench_with_input(
@@ -217,6 +219,7 @@ fn work_stealing_scalability_benchmark(c: &mut Criterion) {
             no_cache: false,
             cache_ttl: 604800,
             profile: false,
+            ..Default::default()
         };
 
         // Test work-stealing strategy
@@ -234,6 +237,7 @@ fn work_stealing_scalability_benchmark(c: &mut Criterion) {
             no_cache: false,
             cache_ttl: 604800,
             profile: false,
+            ..Default::default()
         };
 
         let exclude_matcher = build_exclude_matcher(&[]).unwrap();

@@ -2,7 +2,7 @@
 //!
 //! This module handles:
 //! - Recursive directory traversal using `WalkDir`
-//! - Disk usage measurement using `libc::stat`
+//! - Disk usage measurement using `libc::lstat` (symlinks never followed, like `du`)
 //! - Parallel size aggregation for directories using `DashMap` and `rayon`
 //! - Filtering via glob-based exclude rules
 //! - Progress spinner via `indicatif`
@@ -25,9 +25,9 @@ use crate::cli::SortKey;
 use crate::data::{EntryType, FileEntry};
 use crate::memory::MemoryMonitor;
 use crate::metrics::{PhaseResult, PhaseTimer};
-use crate::utils::{disk_usage, get_dir_metadata, get_owner, path_depth, sort_entries};
+use crate::utils::{get_dir_metadata, resolve_uid, sort_entries};
 use anyhow::{Context, Result};
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use std::collections::HashMap;
@@ -37,23 +37,26 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use walkdir::WalkDir;
 
-/// Recursively restores cached subdirectory entries for a directory cache hit.
+/// Recursively restores cached entries (directories *and* files) for a
+/// directory cache hit.
 ///
-/// Replaces the previous O(n) per-hit loop over all cache entries with an O(depth)
-/// descent through a pre-built parent→children index, reducing the overall
-/// subtree-restoration cost from O(n×k) to O(n) across all cache hits.
+/// Uses an O(depth) descent through a pre-built parent→children index rather
+/// than scanning all cache entries per hit.
+///
+/// No depth filtering happens here: output depth limiting is applied later by
+/// `process_entries`, and restoring the full subtree keeps deep entries alive
+/// in the saved cache even on `--depth`-limited runs.
 #[allow(clippy::too_many_arguments)]
 fn restore_subtree(
-    root: &Path,
     path: &Path,
     children_index: &HashMap<PathBuf, Vec<PathBuf>>,
     cache: &HashMap<PathBuf, CacheEntry>,
-    max_depth: Option<usize>,
+    show_inodes: bool,
     exclude_matcher: &globset::GlobSet,
     exclude_patterns: &[String],
-    dir_totals: &DashMap<PathBuf, u64>,
-    directory_children: &DashMap<PathBuf, u64>,
-    cached_dirs: &DashMap<PathBuf, CacheEntry>,
+    dir_totals: &mut HashMap<PathBuf, u64>,
+    directory_children: &mut HashMap<PathBuf, u64>,
+    restored_entries: &mut HashMap<PathBuf, CacheEntry>,
     new_cache_entries: &mut HashMap<PathBuf, CacheEntry>,
 ) {
     let children = match children_index.get(path) {
@@ -61,10 +64,6 @@ fn restore_subtree(
         None => return,
     };
     for child_path in children {
-        let sub_depth = path_depth(root, child_path);
-        if !max_depth.map(|d| sub_depth <= d).unwrap_or(true) {
-            continue;
-        }
         if exclude_matcher.is_match(child_path) {
             continue;
         }
@@ -76,27 +75,87 @@ fn restore_subtree(
             continue;
         }
         if let Some(cached_subentry) = cache.get(child_path) {
-            cached_dirs.insert(child_path.clone(), cached_subentry.clone());
+            restored_entries.insert(child_path.clone(), cached_subentry.clone());
             new_cache_entries.insert(child_path.clone(), cached_subentry.clone());
-            dir_totals.insert(child_path.clone(), cached_subentry.size);
-            if let Some(inode_count) = cached_subentry.inode_cnt {
-                directory_children.insert(child_path.clone(), inode_count);
+            if cached_subentry.entry_type == EntryType::Dir {
+                dir_totals.insert(child_path.clone(), cached_subentry.size);
+                if show_inodes && let Some(inode_count) = cached_subentry.inode_cnt {
+                    directory_children.insert(child_path.clone(), inode_count);
+                }
+                restore_subtree(
+                    child_path,
+                    children_index,
+                    cache,
+                    show_inodes,
+                    exclude_matcher,
+                    exclude_patterns,
+                    dir_totals,
+                    directory_children,
+                    restored_entries,
+                    new_cache_entries,
+                );
             }
-            restore_subtree(
-                root,
-                child_path,
-                children_index,
-                cache,
-                max_depth,
-                exclude_matcher,
-                exclude_patterns,
-                dir_totals,
-                directory_children,
-                cached_dirs,
-                new_cache_entries,
-            );
         }
     }
+}
+
+/// Verifies that every cached *directory* beneath `path` is still structurally
+/// unchanged (same mtime and nlink) before a cache hit is trusted.
+///
+/// A directory's mtime/nlink only reflect changes to its **direct** children,
+/// so validating just the top directory would miss files or directories
+/// added/removed deeper in the subtree. Statting every cached directory in the
+/// subtree (but no files) catches structural changes at any depth, at a small
+/// fraction of the cost of a full rescan (directories are typically a 10-20x
+/// minority of entries, and no readdir is needed).
+///
+/// Known limitation: an in-place modification of an existing file changes no
+/// directory mtime and therefore cannot be detected by any directory-level
+/// check; such changes are only picked up when the cache TTL expires or
+/// `--no-cache` is used.
+fn validate_cached_subtree(
+    path: &Path,
+    children_index: &HashMap<PathBuf, Vec<PathBuf>>,
+    cache: &HashMap<PathBuf, CacheEntry>,
+    exclude_matcher: &globset::GlobSet,
+    exclude_patterns: &[String],
+) -> bool {
+    let children = match children_index.get(path) {
+        Some(c) => c,
+        None => return true,
+    };
+    for child_path in children {
+        if exclude_matcher.is_match(child_path) {
+            continue;
+        }
+        if child_path.components().any(|c| {
+            exclude_patterns
+                .iter()
+                .any(|x| c.as_os_str() == OsStr::new(x))
+        }) {
+            continue;
+        }
+        if let Some(cached) = cache.get(child_path)
+            && cached.entry_type == EntryType::Dir
+        {
+            match get_dir_metadata(child_path) {
+                Some(meta) if cached.is_valid(meta.mtime, meta.nlink) => {
+                    if !validate_cached_subtree(
+                        child_path,
+                        children_index,
+                        cache,
+                        exclude_matcher,
+                        exclude_patterns,
+                    ) {
+                        return false;
+                    }
+                }
+                // Directory deleted, inaccessible, or changed — reject the hit.
+                _ => return false,
+            }
+        }
+    }
+    true
 }
 
 /// Memory limit status for scanning operations
@@ -135,25 +194,44 @@ impl Default for ScanResult {
     }
 }
 
+/// Reads the atime out of a stat result, or `None` when the stat failed.
+///
+/// Callers gate on `--show-atime` themselves; this only unwraps.
+fn atime_of(meta: &Option<crate::utils::DirMetadata>) -> Option<u64> {
+    meta.as_ref().map(|m| m.atime)
+}
+
 /// Lightweight job struct to minimize per-entry allocation during parallel processing
 #[derive(Debug)]
 struct ScanJob {
     path: PathBuf,
-    is_file: bool,
+    /// True only for real directories. Everything else — regular files,
+    /// symlinks, FIFOs, sockets, device nodes — is a leaf entry; symlinks and
+    /// special files were previously misclassified as directories.
+    is_dir: bool,
+    /// For leaves: the entry's own disk usage. For directories: the
+    /// directory's *own* blocks (its children are aggregated separately).
     size: u64,
-    parent_paths: Vec<PathBuf>,
+    /// Metadata captured with the same single `lstat` used for `size`; reused
+    /// for cache-entry creation, owner resolution, and hard-link detection.
+    /// (Ancestor paths are walked on the fly during aggregation rather than
+    /// materialised per entry — the previous per-file `Vec<PathBuf>` of every
+    /// ancestor was the largest single allocation of the scan.)
+    meta: Option<crate::utils::DirMetadata>,
 }
 
 /// Scans a directory using work-stealing for large subdirectories.
 ///
-/// Fixes applied vs the original:
+/// Properties:
 /// - Single WalkDir traversal: `walker_entries` is collected once and reused for both
 ///   the accumulation phase and the FileEntry construction phase.
-/// - Single `disk_usage` call per file: sizes are stored in `file_sizes` during the
-///   accumulation scope and read back when building FileEntry objects, so each file is
-///   only stat'd once.
+/// - Single `lstat` call per entry: sizes and owner UIDs are captured during the
+///   accumulation scope and read back when building FileEntry objects.
 /// - The rayon scope is used exclusively for accumulation; FileEntry construction runs
 ///   after the scope exits (guaranteeing all accumulation tasks are complete).
+///
+/// Note: unlike the default incremental path, this experimental strategy does
+/// not use the cache and does not support memory monitoring.
 fn scan_with_work_stealing(
     root: &Path,
     args: &Args,
@@ -169,6 +247,9 @@ fn scan_with_work_stealing(
     );
     pb.enable_steady_tick(Duration::from_millis(100));
 
+    let mut phase_timings = Vec::new();
+    let walkdir_timer = PhaseTimer::new("WalkDir");
+
     // Single WalkDir pass — reused for both accumulation and FileEntry creation.
     let walker_entries: Vec<walkdir::DirEntry> = WalkDir::new(root)
         .follow_links(false)
@@ -180,11 +261,14 @@ fn scan_with_work_stealing(
                     .components()
                     .any(|c| args.exclude.iter().any(|x| c.as_os_str() == OsStr::new(x)))
         })
-        .filter_map(|e| {
-            pb.tick();
-            e.ok()
-        })
+        // No manual tick per entry: enable_steady_tick already animates the
+        // spinner from its own thread, and each tick is an atomic RMW on the
+        // walk thread (PARALLELISM_REVIEW.md P8).
+        .filter_map(|e| e.ok())
         .collect();
+
+    phase_timings.push(walkdir_timer.finish());
+    let accumulation_timer = PhaseTimer::new("Aggregation");
 
     // Group entries by their immediate parent to identify large directories.
     let mut dir_entry_counts: HashMap<PathBuf, usize> = HashMap::new();
@@ -209,57 +293,112 @@ fn scan_with_work_stealing(
     // Accumulation maps — populated during the scope, read after it exits.
     let dir_totals: DashMap<PathBuf, u64> = DashMap::new();
     let directory_children: DashMap<PathBuf, u64> = DashMap::new();
-    // Per-file sizes stored here so we never call disk_usage twice for the same file.
+    // Per-leaf sizes stored here so we never lstat the same entry twice.
     let file_sizes: DashMap<PathBuf, u64> = DashMap::new();
+    // Owner UIDs captured from the same lstat, so --show-owner does not need
+    // a second syscall per entry when building FileEntry objects.
+    let entry_owners: DashMap<PathBuf, u32> = DashMap::new();
+    // Access times from that same lstat, for --show-atime / --older-than.
+    let entry_atimes: DashMap<PathBuf, u64> = DashMap::new();
+    // Inodes of multi-link files already counted in totals (hard-link dedup).
+    let seen_inodes: DashSet<(u64, u64)> = DashSet::new();
+
+    // Shared accumulation logic for both the large-directory tasks and the
+    // remaining-entries pass. A single lstat per entry supplies size, owner,
+    // and inode identity; symlinks report their own size (never the target's);
+    // each hard-linked inode contributes to totals exactly once; and each
+    // directory's own blocks count toward its total, all matching `du`.
+    let accumulate = |entry: &walkdir::DirEntry| {
+        let path = entry.path().to_path_buf();
+        let meta = get_dir_metadata(&path);
+        let size = meta.as_ref().map(|m| m.size).unwrap_or(0);
+
+        if args.show_owner
+            && let Some(uid) = meta.as_ref().and_then(|m| m.owner)
+        {
+            entry_owners.insert(path.clone(), uid);
+        }
+
+        if let Some(at) = meta.as_ref().map(|m| m.atime) {
+            entry_atimes.insert(path.clone(), at);
+        }
+
+        let is_dir = entry.file_type().is_dir();
+        let counts_toward_totals = if is_dir {
+            // The directory's own blocks count toward its own total…
+            dir_totals
+                .entry(path.clone())
+                .and_modify(|v| *v += size)
+                .or_insert(size);
+            // …and propagate to ancestors below (unless this is the root).
+            path != root
+        } else {
+            file_sizes.insert(path.clone(), size);
+            match meta.as_ref() {
+                // insert() returns false if another link of this inode was
+                // already counted by a concurrent task.
+                Some(m) if m.nlink > 1 => seen_inodes.insert((m.dev, m.ino)),
+                _ => true,
+            }
+        };
+
+        if counts_toward_totals {
+            let mut cur = path.parent();
+            while let Some(p) = cur {
+                dir_totals
+                    .entry(p.to_path_buf())
+                    .and_modify(|v| *v += size)
+                    .or_insert(size);
+                if p == root {
+                    break;
+                }
+                cur = p.parent();
+            }
+        }
+
+        if args.show_inodes
+            && let Some(parent) = path.parent()
+        {
+            *directory_children.entry(parent.to_path_buf()).or_insert(0) += 1;
+        }
+    };
+
+    // Group large-directory entries by index in a single O(n) pass —
+    // previously every large directory re-scanned (and cloned from) the whole
+    // walker_entries vec, an O(large_dirs × n) pattern with duplicated
+    // DirEntry allocations.
+    let mut large_dir_groups: HashMap<PathBuf, Vec<usize>> = HashMap::new();
+    for (idx, entry) in walker_entries.iter().enumerate() {
+        if let Some(parent) = entry.path().parent()
+            && large_dirs.contains(parent)
+        {
+            large_dir_groups
+                .entry(parent.to_path_buf())
+                .or_default()
+                .push(idx);
+        }
+    }
 
     // Accumulation phase: the scope guarantees all spawned tasks complete before we
     // proceed to FileEntry construction, so dir_totals / file_sizes are fully populated.
     rayon::scope(|scope| {
         // Spawn a task per large directory so its entries are processed in parallel
         // with the "remaining" par_iter below, using rayon's work-stealing scheduler.
-        for large_dir in &large_dirs {
-            let large_dir_entries: Vec<walkdir::DirEntry> = walker_entries
-                .iter()
-                .filter(|e| e.path().parent() == Some(large_dir.as_path()))
-                .cloned()
-                .collect();
-
-            let dir_totals_ref = &dir_totals;
-            let file_sizes_ref = &file_sizes;
-            let directory_children_ref = &directory_children;
-            let args_ref = args;
-
+        for indices in large_dir_groups.values() {
+            let accumulate_ref = &accumulate;
+            let walker_entries_ref = &walker_entries;
             scope.spawn(move |_| {
-                large_dir_entries.par_iter().for_each(|entry| {
-                    let path = entry.path().to_path_buf();
-                    if entry.file_type().is_file() {
-                        let size = disk_usage(&path);
-                        file_sizes_ref.insert(path.clone(), size);
-                        let mut cur = path.parent();
-                        while let Some(p) = cur {
-                            dir_totals_ref
-                                .entry(p.to_path_buf())
-                                .and_modify(|v| *v += size)
-                                .or_insert(size);
-                            if p == root {
-                                break;
-                            }
-                            cur = p.parent();
-                        }
-                    }
-                    if args_ref.show_inodes {
-                        if let Some(parent) = path.parent() {
-                            *directory_children_ref
-                                .entry(parent.to_path_buf())
-                                .or_insert(0) += 1;
-                        }
-                    }
-                });
+                indices
+                    .par_iter()
+                    .for_each(|&idx| accumulate_ref(&walker_entries_ref[idx]));
             });
         }
 
         // Process the remaining entries (those not in large directories) in parallel.
         // This runs concurrently with the scope.spawn'd tasks above via work-stealing.
+        // (A named reference: `accumulate` itself cannot be moved here because the
+        // spawned tasks above still borrow it for the lifetime of the scope.)
+        let accumulate_ref = &accumulate;
         walker_entries
             .par_iter()
             .filter(|e| {
@@ -268,50 +407,39 @@ fn scan_with_work_stealing(
                     .map(|p| !large_dirs.contains(p))
                     .unwrap_or(true)
             })
-            .for_each(|entry| {
-                let path = entry.path().to_path_buf();
-                if entry.file_type().is_file() {
-                    let size = disk_usage(&path);
-                    file_sizes.insert(path.clone(), size);
-                    let mut cur = path.parent();
-                    while let Some(p) = cur {
-                        dir_totals
-                            .entry(p.to_path_buf())
-                            .and_modify(|v| *v += size)
-                            .or_insert(size);
-                        if p == root {
-                            break;
-                        }
-                        cur = p.parent();
-                    }
-                }
-                if args.show_inodes {
-                    if let Some(parent) = path.parent() {
-                        *directory_children.entry(parent.to_path_buf()).or_insert(0) += 1;
-                    }
-                }
-            });
+            .for_each(accumulate_ref);
     });
+
+    phase_timings.push(accumulation_timer.finish());
 
     pb.finish_with_message("Work-stealing scan complete");
 
     // Build FileEntry objects from the already-collected walker_entries.
-    // Sizes come from file_sizes (populated above) — no second disk_usage call.
+    // Sizes and owners come from the accumulation pass — no second lstat call.
     let mut final_entries: Vec<FileEntry> = walker_entries
         .par_iter()
         .map(|entry| {
             let path = entry.path().to_path_buf();
-            if entry.file_type().is_file() {
+            // Copy the UID out before resolving so the DashMap shard guard is
+            // released before resolve_uid takes the UID-cache mutex.
+            let owner_uid = if args.show_owner {
+                entry_owners.get(&path).map(|v| *v)
+            } else {
+                None
+            };
+            let owner = owner_uid.map(resolve_uid);
+            let atime = entry_atimes.get(&path).map(|v| *v);
+            // Only real directories are Dir entries; symlinks and special
+            // files are leaf entries (previously misclassified as Dir).
+            if !entry.file_type().is_dir() {
                 FileEntry {
                     path: path.clone(),
                     size: file_sizes.get(&path).map(|v| *v).unwrap_or(0),
-                    owner: if args.show_owner {
-                        get_owner(&path)
-                    } else {
-                        None
-                    },
+                    owner,
                     inodes: None,
                     entry_type: EntryType::File,
+                    atime,
+                    at_risk_bytes: None,
                 }
             } else {
                 let size = dir_totals.get(&path).map(|v| *v).unwrap_or(0);
@@ -323,17 +451,16 @@ fn scan_with_work_stealing(
                 FileEntry {
                     path: path.clone(),
                     size,
-                    owner: if args.show_owner {
-                        get_owner(&path)
-                    } else {
-                        None
-                    },
+                    owner,
                     inodes: if args.show_inodes {
                         Some(inode_count)
                     } else {
                         None
                     },
                     entry_type: EntryType::Dir,
+                    // Replaced by the subtree rollup in `atime::apply_rollup`.
+                    atime,
+                    at_risk_bytes: None,
                 }
             }
         })
@@ -346,7 +473,7 @@ fn scan_with_work_stealing(
         cache_hits: 0,
         cache_total: 0,
         memory_limit_hit: false,
-        phase_timings: Vec::new(),
+        phase_timings,
         memory_status: MemoryLimitStatus::Normal,
     })
 }
@@ -368,7 +495,7 @@ fn scan_with_work_stealing(
 /// * `sort_key` - How to sort the resulting entries (by name or size)
 ///
 /// # Returns
-/// * `Result<Vec<FileEntry>>` - A vector of file and directory entries on success
+/// * `Result<ScanResult>` - Scan entries plus cache statistics on success
 ///
 /// # Errors
 /// Returns an error if:
@@ -420,12 +547,17 @@ pub fn scan_files_and_dirs_with_memory_monitor(
 ///
 /// This function implements the incremental scanning algorithm:
 /// 1. Load existing cache if available and not disabled
-/// 2. For each directory during WalkDir traversal:
-///    - Fetch directory metadata (mtime, nlink)
-///    - Compare against cached entry
-///    - If unchanged, skip walking into subtree and reuse cached values
-///    - If changed, perform full scan and update cache
-/// 3. Save updated cache to disk
+/// 2. For each directory during WalkDir traversal (except the root, which is
+///    always rescanned):
+///    - Fetch directory metadata (mtime, nlink) and compare against the cache
+///    - If unchanged AND every cached directory beneath it is also unchanged,
+///      skip walking the subtree and restore its cached dirs and files
+///    - Otherwise, perform a full scan of the subtree and update the cache
+/// 3. Propagate cached subtree totals to ancestor directories
+/// 4. Save updated cache (directories and files) to disk
+///
+/// Limitation: in-place file modifications do not change any directory mtime
+/// and are only detected after the cache TTL expires or with `--no-cache`.
 pub fn scan_files_and_dirs_incremental(
     root: &Path,
     args: &Args,
@@ -479,12 +611,18 @@ fn scan_files_and_dirs_with_monitor(
     );
     pb.enable_steady_tick(Duration::from_millis(100));
 
-    // Data structures for aggregating results
-    let dir_totals: DashMap<PathBuf, u64> = DashMap::new();
-    let directory_children: DashMap<PathBuf, u64> = DashMap::new();
-    let mut new_cache_entries: std::collections::HashMap<PathBuf, CacheEntry> =
-        std::collections::HashMap::new();
-    let cached_dirs: DashMap<PathBuf, CacheEntry> = DashMap::new();
+    // Data structures for aggregating results.
+    //
+    // Plain HashMaps, deliberately: every write happens on the single-threaded
+    // walk or aggregation phase, and the only concurrent access is read-only
+    // from the FileEntry-construction par_iter (&HashMap is Sync). DashMaps
+    // here paid sharding and per-shard locking on the hottest sequential loops
+    // for zero concurrency benefit (PARALLELISM_REVIEW.md P4).
+    let mut dir_totals: HashMap<PathBuf, u64> = HashMap::new();
+    let mut directory_children: HashMap<PathBuf, u64> = HashMap::new();
+    let mut new_cache_entries: HashMap<PathBuf, CacheEntry> = HashMap::new();
+    // Entries (dirs and files) restored from cache-hit subtrees.
+    let mut restored_entries: HashMap<PathBuf, CacheEntry> = HashMap::new();
 
     // Memory monitoring state
     let mut memory_nearing_limit = false;
@@ -531,46 +669,85 @@ fn scan_files_and_dirs_with_monitor(
                 return false;
             }
 
-            // For directories, check if we can skip based on cache
-            if e.file_type().is_dir() && !args.no_cache {
-                if let Some(cached_entry) = cache.get(&path.to_path_buf()) {
-                    if let Some(current_metadata) = get_dir_metadata(path) {
-                        if cached_entry.is_valid(current_metadata.mtime, current_metadata.nlink) {
-                            // Cache hit - we can skip this subtree
-                            cache_hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            // For directories, check if we can skip based on cache.
+            //
+            // The root itself is never treated as a cache hit: a root-level hit
+            // would skip the entire walk and freeze results on stale data, since
+            // the root's mtime/nlink do not change when anything deeper than its
+            // direct children changes.
+            if e.file_type().is_dir() && !args.no_cache && path != root {
+                // A hit requires the directory itself to be unchanged AND
+                // every cached directory beneath it to be unchanged — a
+                // directory's own mtime/nlink say nothing about deeper
+                // structural changes.
+                if let Some(cached_entry) = cache.get(&path.to_path_buf())
+                    && let Some(current_metadata) = get_dir_metadata(path)
+                    && cached_entry.is_valid(current_metadata.mtime, current_metadata.nlink)
+                    && validate_cached_subtree(
+                        path,
+                        &children_index,
+                        &cache,
+                        exclude_matcher,
+                        &args.exclude,
+                    )
+                {
+                    // Cache hit - we can skip this subtree
+                    cache_hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-                            // Reuse cached aggregated values
-                            dir_totals.insert(path.to_path_buf(), cached_entry.size);
-                            if let Some(inode_count) = cached_entry.inode_cnt {
-                                directory_children.insert(path.to_path_buf(), inode_count);
-                            }
-
-                            // Store cached directory info for later FileEntry creation
-                            cached_dirs.insert(path.to_path_buf(), cached_entry.clone());
-
-                            // Add to new cache (preserving valid entries)
-                            new_cache_entries.insert(path.to_path_buf(), cached_entry.clone());
-
-                            // Restore cached subdirectory entries using the pre-built
-                            // children_index for O(n) overall cost instead of O(n×k).
-                            restore_subtree(
-                                root,
-                                path,
-                                &children_index,
-                                &cache,
-                                args.depth,
-                                exclude_matcher,
-                                &args.exclude,
-                                &dir_totals,
-                                &directory_children,
-                                &cached_dirs,
-                                &mut new_cache_entries,
-                            );
-
-                            pb.tick();
-                            return false; // Skip walking into this subtree
-                        }
+                    // Reuse cached aggregated values
+                    dir_totals.insert(path.to_path_buf(), cached_entry.size);
+                    if args.show_inodes
+                        && let Some(inode_count) = cached_entry.inode_cnt
+                    {
+                        directory_children.insert(path.to_path_buf(), inode_count);
                     }
+
+                    // Store cached entry info for later FileEntry creation
+                    restored_entries.insert(path.to_path_buf(), cached_entry.clone());
+
+                    // Add to new cache (preserving valid entries)
+                    new_cache_entries.insert(path.to_path_buf(), cached_entry.clone());
+
+                    // Restore cached subtree entries (dirs and files) using
+                    // the pre-built children_index.
+                    restore_subtree(
+                        path,
+                        &children_index,
+                        &cache,
+                        args.show_inodes,
+                        exclude_matcher,
+                        &args.exclude,
+                        &mut dir_totals,
+                        &mut directory_children,
+                        &mut restored_entries,
+                        &mut new_cache_entries,
+                    );
+
+                    // Files under this subtree are never walked, so the
+                    // cached total must be propagated to every ancestor up
+                    // to the root — ancestor totals are otherwise built
+                    // only from walked files.
+                    let mut cur = path.parent();
+                    while let Some(p) = cur {
+                        dir_totals
+                            .entry(p.to_path_buf())
+                            .and_modify(|v| *v += cached_entry.size)
+                            .or_insert(cached_entry.size);
+                        if p == root {
+                            break;
+                        }
+                        cur = p.parent();
+                    }
+
+                    // The skipped directory itself is also invisible to the
+                    // aggregation pass — count it as a child of its parent.
+                    if args.show_inodes
+                        && let Some(parent) = path.parent()
+                    {
+                        *directory_children.entry(parent.to_path_buf()).or_insert(0) += 1;
+                    }
+
+                    return false; // Skip walking into this subtree
                 }
                 cache_misses.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
@@ -582,27 +759,24 @@ fn scan_files_and_dirs_with_monitor(
     let mut walker_entries: Vec<walkdir::DirEntry> = Vec::new();
     let mut memory_exceeded = false;
 
+    // No manual tick per entry: enable_steady_tick already animates the
+    // spinner from its own thread (PARALLELISM_REVIEW.md P8).
     for entry in walker_iter.flatten() {
-        pb.tick();
-
         // Increment counter and check memory every N entries
         entry_counter += 1;
-        if entry_counter % memory_check_interval == 0 {
-            if let Some(ref monitor) = monitor {
-                if let Ok(mut mem_monitor) = monitor.lock() {
-                    if mem_monitor.exceeds_limit() {
-                        eprintln!("⚠️  Memory limit exceeded, terminating scan early");
-                        memory_exceeded = true;
-                        break;
-                    } else if !memory_nearing_limit && mem_monitor.nearing_limit() {
-                        eprintln!(
-                            "⚠️  Memory usage nearing limit, disabling cache and heavy features"
-                        );
-                        memory_nearing_limit = true;
-                        // Disable caching dynamically to reduce memory usage
-                        crate::cache::set_enabled(false);
-                    }
-                }
+        if entry_counter % memory_check_interval == 0
+            && let Some(ref monitor) = monitor
+            && let Ok(mut mem_monitor) = monitor.lock()
+        {
+            if mem_monitor.exceeds_limit() {
+                eprintln!("⚠️  Memory limit exceeded, terminating scan early");
+                memory_exceeded = true;
+                break;
+            } else if !memory_nearing_limit && mem_monitor.nearing_limit() {
+                eprintln!("⚠️  Memory usage nearing limit, disabling cache and heavy features");
+                memory_nearing_limit = true;
+                // Disable caching dynamically to reduce memory usage
+                crate::cache::set_enabled(false);
             }
         }
 
@@ -617,29 +791,19 @@ fn scan_files_and_dirs_with_monitor(
         .par_iter()
         .map(|entry| {
             let path = entry.path().to_path_buf();
-            let is_file = entry.file_type().is_file();
-            let size = if is_file { disk_usage(&path) } else { 0 };
-
-            let parent_paths = if is_file {
-                let mut parents = Vec::new();
-                let mut current = path.parent();
-                while let Some(parent_path) = current {
-                    parents.push(parent_path.to_path_buf());
-                    if parent_path == root {
-                        break;
-                    }
-                    current = parent_path.parent();
-                }
-                parents
-            } else {
-                Vec::new()
-            };
+            let is_dir = entry.file_type().is_dir();
+            // One lstat per entry: size, mtime, nlink, owner, and inode identity
+            // all come from the same call and are reused for cache entries,
+            // owner display, and hard-link deduplication. Directories record
+            // their own blocks so totals include them, as `du` does.
+            let meta = get_dir_metadata(&path);
+            let size = meta.as_ref().map(|m| m.size).unwrap_or(0);
 
             ScanJob {
                 path,
-                is_file,
+                is_dir,
                 size,
-                parent_paths,
+                meta,
             }
         })
         .collect();
@@ -648,15 +812,48 @@ fn scan_files_and_dirs_with_monitor(
     // Aggregation phase
     let aggregation_timer = PhaseTimer::new("Aggregation");
 
-    // Accumulate directory sizes from file scan jobs
+    // Accumulate directory totals from scan jobs. Leaf sizes propagate to all
+    // ancestors; each directory also contributes its *own* blocks to its total
+    // and its ancestors', matching `du` (previously only file sizes were
+    // counted, so every directory inode was missing from the numbers).
+    //
+    // Hard-link deduplication: a file with st_nlink > 1 reachable via several
+    // paths inside the tree must only be counted once in totals, as `du` does.
+    // (Links that straddle a cache-hit boundary cannot be deduplicated — the
+    // cached subtree's total is a pre-aggregated number; this matches the
+    // scan-order dependence `du` itself has.)
+    let mut seen_inodes: std::collections::HashSet<(u64, u64)> = std::collections::HashSet::new();
     for job in &scan_jobs {
-        if job.is_file {
-            for parent_path in &job.parent_paths {
-                dir_totals
-                    .entry(parent_path.clone())
-                    .and_modify(|v| *v += job.size)
-                    .or_insert(job.size);
+        if !job.is_dir {
+            if let Some(meta) = &job.meta
+                && meta.nlink > 1
+                && !seen_inodes.insert((meta.dev, meta.ino))
+            {
+                continue; // Same inode already counted via another link
             }
+        } else {
+            // The directory's own blocks count toward its own total…
+            dir_totals
+                .entry(job.path.clone())
+                .and_modify(|v| *v += job.size)
+                .or_insert(job.size);
+            // …and the root's own blocks have no in-tree ancestors.
+            if job.path == root {
+                continue;
+            }
+        }
+        // Propagate the entry's size to every ancestor up to the root,
+        // walking the parent chain in place (no per-entry Vec allocation).
+        let mut cur = job.path.parent();
+        while let Some(parent_path) = cur {
+            dir_totals
+                .entry(parent_path.to_path_buf())
+                .and_modify(|v| *v += job.size)
+                .or_insert(job.size);
+            if parent_path == root {
+                break;
+            }
+            cur = parent_path.parent();
         }
     }
 
@@ -673,29 +870,53 @@ fn scan_files_and_dirs_with_monitor(
     let scanned_entries: Vec<(FileEntry, Option<CacheEntry>)> = scan_jobs
         .par_iter()
         .map(|job| {
-            let (entry, cache_entry) = if job.is_file {
+            let owner = if args.show_owner {
+                job.meta.as_ref().and_then(|m| m.owner).map(resolve_uid)
+            } else {
+                None
+            };
+
+            let (entry, cache_entry) = if !job.is_dir {
+                // Leaf entry: regular file, symlink, FIFO, socket, or device.
                 let entry = FileEntry {
                     path: job.path.clone(),
                     size: job.size,
-                    owner: if args.show_owner {
-                        get_owner(&job.path)
-                    } else {
-                        None
-                    },
+                    owner,
                     inodes: None,
                     entry_type: EntryType::File,
+                    atime: atime_of(&job.meta),
+                    at_risk_bytes: None,
                 };
-                (entry, None)
+
+                // Cache file entries too, so that cache-hit subtrees can restore
+                // their files and output stays identical across runs.
+                let cache_entry = job.meta.as_ref().map(|metadata| {
+                    CacheEntry::new(CacheEntryParams {
+                        path: job.path.clone(),
+                        size: job.size,
+                        mtime: metadata.mtime,
+                        nlink: metadata.nlink,
+                        inode_cnt: None,
+                        owner: metadata.owner,
+                        entry_type: EntryType::File,
+                        // Always cached, even without --show-atime: otherwise a
+                        // cache built by a plain run would leave a later
+                        // --show-atime run blind over every hit subtree.
+                        atime: Some(metadata.atime),
+                    })
+                });
+
+                (entry, cache_entry)
             } else {
-                let size = dir_totals.get(&job.path).map(|v| *v).unwrap_or(0);
+                let size = dir_totals.get(&job.path).copied().unwrap_or(0);
                 let inode_count = if args.show_inodes {
-                    directory_children.get(&job.path).map(|v| *v).unwrap_or(0)
+                    directory_children.get(&job.path).copied().unwrap_or(0)
                 } else {
                     0
                 };
 
                 // Create cache entry for this directory
-                let cache_entry = get_dir_metadata(&job.path).map(|metadata| {
+                let cache_entry = job.meta.as_ref().map(|metadata| {
                     CacheEntry::new(CacheEntryParams {
                         path: job.path.clone(),
                         size,
@@ -708,23 +929,26 @@ fn scan_files_and_dirs_with_monitor(
                         },
                         owner: metadata.owner,
                         entry_type: EntryType::Dir,
+                        atime: Some(metadata.atime),
                     })
                 });
 
                 let entry = FileEntry {
                     path: job.path.clone(),
                     size,
-                    owner: if args.show_owner {
-                        get_owner(&job.path)
-                    } else {
-                        None
-                    },
+                    owner,
                     inodes: if args.show_inodes {
                         Some(inode_count)
                     } else {
                         None
                     },
                     entry_type: EntryType::Dir,
+                    // The directory's *own* atime, which this very scan just
+                    // updated by reading it. `atime::apply_rollup` overwrites
+                    // it with the oldest leaf beneath, keeping this value only
+                    // for directories that contain no leaves at all.
+                    atime: atime_of(&job.meta),
+                    at_risk_bytes: None,
                 };
 
                 (entry, cache_entry)
@@ -744,10 +968,11 @@ fn scan_files_and_dirs_with_monitor(
         }
     }
 
-    // Add cached directory entries
-    let cached_entries_vec: Vec<(PathBuf, CacheEntry)> = cached_dirs
+    // Add entries restored from cache-hit subtrees (dirs and files).
+    // Owner comes from the cached UID — no re-stat of skipped paths.
+    let cached_entries_vec: Vec<(PathBuf, CacheEntry)> = restored_entries
         .iter()
-        .map(|entry| (entry.key().clone(), entry.value().clone()))
+        .map(|(path, entry)| (path.clone(), entry.clone()))
         .collect();
 
     let mut cached_entries: Vec<FileEntry> = cached_entries_vec
@@ -756,12 +981,16 @@ fn scan_files_and_dirs_with_monitor(
             path: path.clone(),
             size: cached_entry.size,
             owner: if args.show_owner {
-                get_owner(path)
+                cached_entry.owner.map(resolve_uid)
             } else {
                 None
             },
             inodes: cached_entry.inode_cnt,
             entry_type: cached_entry.entry_type,
+            // Conservative by construction: a cached atime can only be older
+            // than the truth, so it over-states age and never hides risk.
+            atime: cached_entry.atime,
+            at_risk_bytes: None,
         })
         .collect();
 
@@ -781,22 +1010,20 @@ fn scan_files_and_dirs_with_monitor(
             "📊 Cache stats: {} hits, {} misses ({}% hit rate)",
             hits,
             misses,
-            if hits + misses > 0 {
-                hits * 100 / (hits + misses)
-            } else {
-                0
-            }
+            (hits * 100).checked_div(hits + misses).unwrap_or(0)
         );
     }
 
-    // Save updated cache (unless disabled or memory constrained)
-    if !args.no_cache && !memory_nearing_limit {
+    // Save updated cache (unless disabled or memory constrained).
+    // A scan terminated early by the memory limit is incomplete — persisting it
+    // would poison future runs with truncated directory totals.
+    if !args.no_cache && !memory_nearing_limit && !memory_exceeded {
         if let Err(e) = save_cache_with_mtime(root, &new_cache_entries, root_mtime) {
             eprintln!("Failed to save cache: {}", e);
         } else {
             eprintln!("Cache updated with {} entries", new_cache_entries.len());
         }
-    } else if memory_nearing_limit {
+    } else if memory_nearing_limit || memory_exceeded {
         eprintln!("⚠️  Cache saving disabled due to memory constraints");
     }
 

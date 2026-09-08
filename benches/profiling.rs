@@ -9,7 +9,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 use tempfile::TempDir;
-use walkdir;
 
 #[cfg(target_os = "linux")]
 use procfs::process::Process;
@@ -43,14 +42,12 @@ impl MemoryTracker {
         {
             // Use ps command on macOS
             if let Ok(output) = Command::new("ps")
-                .args(&["-o", "rss=", "-p", &std::process::id().to_string()])
+                .args(["-o", "rss=", "-p", &std::process::id().to_string()])
                 .output()
+                && let Ok(rss_str) = String::from_utf8(output.stdout)
+                && let Ok(rss_kb) = rss_str.trim().parse::<f64>()
             {
-                if let Ok(rss_str) = String::from_utf8(output.stdout) {
-                    if let Ok(rss_kb) = rss_str.trim().parse::<f64>() {
-                        return rss_kb / 1024.0; // Convert kB to MB
-                    }
-                }
+                return rss_kb / 1024.0; // Convert kB to MB
             }
             0.0
         }
@@ -119,6 +116,7 @@ fn create_args(path: PathBuf) -> Args {
         no_cache: false,
         cache_ttl: 604800, // 7 days
         profile: false,
+        ..Default::default()
     }
 }
 
