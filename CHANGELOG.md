@@ -91,6 +91,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `scan_benchmark` still called the positional 8-argument
   `CacheEntry::new` that 1.4.10 replaced with `CacheEntryParams`. All six
   benches now build.
+- **Fixed a flaky cache test.** `test_dynamic_cache_enabling_disabling` set the
+  process-global `CACHE_ENABLED` flag to `false` without taking the shared
+  `CACHE_TEST_LOCK`. Since `load_cache` and `save_cache` return early when that
+  flag is false, any concurrently-running test that expected caching to work
+  could observe an empty cache — surfacing as
+  `test_cache_operations_use_configurable_directory` failing with `left: 0,
+  right: 1`. Timing-dependent, so it passed locally and failed on CI. The test
+  now takes the lock like every other test that touches global cache state.
 - `libc` added as a dev-dependency: integration tests link only against the
   `rudu` lib and dev-deps, and the access-time tests backdate atimes via
   `utimes`.

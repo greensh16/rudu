@@ -382,6 +382,12 @@ mod cache_root_tests {
 
     #[test]
     fn test_dynamic_cache_enabling_disabling() {
+        // CACHE_ENABLED is process-global, and `load_cache`/`save_cache` return
+        // early when it is false. Without this lock, disabling it here races
+        // with any concurrently-running test that expects caching to work, and
+        // that test sees an empty cache for no visible reason.
+        let _lock = crate::cache::tests::safe_lock(&crate::cache::tests::CACHE_TEST_LOCK);
+
         // Store initial state to restore it at the end
         let initial_state = is_enabled();
 
