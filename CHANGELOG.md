@@ -81,6 +81,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `libc` added as a dev-dependency: integration tests link only against the
   `rudu` lib and dev-deps, and the access-time tests backdate atimes via
   `utimes`.
+- **Unused `jemalloc-ctl` dev-dependency removed.** Nothing referenced it, but
+  it pulled in `jemalloc-sys`, which compiled jemalloc from C source on every
+  `cargo test`/`cargo bench` and made the test targets impossible to
+  cross-check for another platform without a C cross-compiler.
+- **Cross-platform lint fixes.** With clippy now enforced in CI on Linux, four
+  latent issues surfaced that a macOS-only lint run cannot see:
+  `get_dir_metadata`'s `st_nlink`/`st_dev` casts are load-bearing on macOS
+  (`u16`/`i32`) but no-ops on Linux (`u64`), so they carry a targeted
+  `#[allow(clippy::unnecessary_cast)]` rather than being removed — `u64::from`
+  is not an option because `st_dev` is signed on macOS. Two `#[cfg(target_os =
+  "linux")]` bench blocks had collapsible `if`s, and `benches/profiling.rs`
+  imported `std::process::Command` unconditionally although only its macOS
+  branch uses it.
 
 ## [1.4.10] - 2026-07-17
 

@@ -315,6 +315,18 @@ pub fn get_dir_metadata(path: &Path) -> Option<DirMetadata> {
     }
 
     let stat_buf = unsafe { stat_buf.assume_init() };
+
+    // `st_nlink` and `st_dev` are platform-dependent: on macOS they are `u16`
+    // and `i32`, on Linux both are already `u64`. These casts are therefore
+    // load-bearing on macOS and no-ops on Linux, where clippy flags them as
+    // redundant — hence the targeted allow rather than removing them, which
+    // would break the macOS build. `u64::from` is not an alternative either:
+    // `st_dev` is signed on macOS.
+    #[allow(clippy::unnecessary_cast)]
+    let nlink = stat_buf.st_nlink as u64;
+    #[allow(clippy::unnecessary_cast)]
+    let dev = stat_buf.st_dev as u64;
+
     Some(DirMetadata {
         // Nanosecond-precision mtime: with whole seconds only, a change made in
         // the same second as the caching scan would compare as "unchanged" and
@@ -322,10 +334,10 @@ pub fn get_dir_metadata(path: &Path) -> Option<DirMetadata> {
         mtime: (stat_buf.st_mtime as u64)
             .wrapping_mul(1_000_000_000)
             .wrapping_add(stat_buf.st_mtime_nsec as u64),
-        nlink: stat_buf.st_nlink as u64,
+        nlink,
         size: (stat_buf.st_blocks as u64) * 512,
         owner: Some(stat_buf.st_uid),
-        dev: stat_buf.st_dev as u64,
+        dev,
         ino: stat_buf.st_ino,
         // Negative atimes (pre-1970, or a filesystem returning garbage) clamp
         // to the epoch so age arithmetic stays in unsigned range.

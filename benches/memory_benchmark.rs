@@ -46,10 +46,10 @@ impl MemoryUsage {
 
 #[cfg(target_os = "linux")]
 fn get_memory_usage() -> (u64, u64) {
-    if let Ok(process) = Process::myself() {
-        if let Ok(stat) = process.stat() {
-            return (stat.rss * 4096, stat.vsize); // RSS is in pages, VMS is in bytes
-        }
+    if let Ok(process) = Process::myself()
+        && let Ok(stat) = process.stat()
+    {
+        return (stat.rss * 4096, stat.vsize); // RSS is in pages, VMS is in bytes
     }
     (0, 0)
 }

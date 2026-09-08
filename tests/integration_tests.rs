@@ -862,12 +862,17 @@ fn set_atime_days_ago(path: &std::path::Path, days: u64) {
     use std::os::unix::ffi::OsStrExt;
 
     let meta = get_dir_metadata(path).expect("stat failed");
-    let now = rudu::atime::now_unix() as i64;
-    let target = now - (days as i64) * 86_400;
+
+    // Cast straight to the libc types, once. `suseconds_t` is i32 on macOS but
+    // i64 on 64-bit Linux, so going through an intermediate i64 would leave a
+    // redundant second cast that fails `clippy -D warnings` on Linux while
+    // being necessary on macOS.
+    let now = rudu::atime::now_unix() as libc::time_t;
+    let target = now - (days as libc::time_t) * 86_400;
 
     // get_dir_metadata reports mtime in nanoseconds; utimes takes microseconds.
-    let mtime_secs = (meta.mtime / 1_000_000_000) as i64;
-    let mtime_usec = ((meta.mtime % 1_000_000_000) / 1_000) as i64;
+    let mtime_secs = (meta.mtime / 1_000_000_000) as libc::time_t;
+    let mtime_usec = ((meta.mtime % 1_000_000_000) / 1_000) as libc::suseconds_t;
 
     let times = [
         libc::timeval {
@@ -876,7 +881,7 @@ fn set_atime_days_ago(path: &std::path::Path, days: u64) {
         },
         libc::timeval {
             tv_sec: mtime_secs,
-            tv_usec: mtime_usec as libc::suseconds_t,
+            tv_usec: mtime_usec,
         },
     ];
     let c_path = CString::new(path.as_os_str().as_bytes()).unwrap();

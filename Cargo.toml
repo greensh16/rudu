@@ -34,7 +34,6 @@ tempfile = "3.8"
 # Integration tests link only against the rudu lib and dev-deps, so the
 # access-time tests need their own libc handle to backdate atimes via utimes.
 libc = "0.2"
-jemalloc-ctl = "0.5"
 walkdir = "2.5"
 # Memory benchmarking - using criterion fork with memory tracking
 # criterion-memtrack = { git = "https://github.com/jemalloc/criterion-memtrack" }

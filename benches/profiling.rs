@@ -13,6 +13,9 @@ use tempfile::TempDir;
 #[cfg(target_os = "linux")]
 use procfs::process::Process;
 
+// Only the macOS branch shells out to `ps`; an unconditional import is an
+// unused-import error on Linux.
+#[cfg(target_os = "macos")]
 use std::process::Command;
 
 /// Memory usage tracker for profiling
@@ -30,11 +33,11 @@ impl MemoryTracker {
     fn current_rss_mb() -> f64 {
         #[cfg(target_os = "linux")]
         {
-            if let Ok(process) = Process::myself() {
-                if let Ok(stat) = process.stat() {
-                    // RSS is in pages, convert to MB
-                    return stat.rss as f64 * 4.0 / 1024.0; // Assuming 4KB pages
-                }
+            if let Ok(process) = Process::myself()
+                && let Ok(stat) = process.stat()
+            {
+                // RSS is in pages, convert to MB
+                return stat.rss as f64 * 4.0 / 1024.0; // Assuming 4KB pages
             }
             0.0
         }
