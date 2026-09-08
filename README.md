@@ -1,6 +1,8 @@
 # rudu
 
 [![CI](https://github.com/greensh16/rudu/actions/workflows/ci.yml/badge.svg)](https://github.com/greensh16/rudu/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/rudu-hpc)](https://crates.io/crates/rudu-hpc)
+[![docs.rs](https://img.shields.io/docsrs/rudu-hpc)](https://docs.rs/rudu-hpc)
 [![Release](https://img.shields.io/github/v/release/greensh16/rudu)](https://github.com/greensh16/rudu/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/greensh16/rudu/total)](https://github.com/greensh16/rudu/releases)
 [![License](https://img.shields.io/github/license/greensh16/rudu)](LICENSE)
