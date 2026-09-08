@@ -66,6 +66,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Default output is unchanged: without `--show-atime` the terminal table is
   byte-for-byte what it was.
 
+### Changed
+- **Published to crates.io as `rudu-hpc`.** The name `rudu` on crates.io belongs
+  to an unrelated project by another author, so `cargo install rudu` installs
+  something else entirely. The package is therefore `rudu-hpc`, while the
+  `[lib]` and `[[bin]]` targets stay named `rudu` — the installed command is
+  still `rudu`, and `use rudu::...` is unchanged for anything depending on the
+  library. The cache directory is also unaffected: it is a hardcoded `rudu/`
+  under the XDG cache root, not derived from the package name, so existing
+  caches remain valid.
+- Manifest metadata required for publishing added: `description`, `license`
+  (`GPL-3.0-only`), `readme`, `keywords`, `categories`, `homepage`, and
+  `documentation`.
+
 ### Maintenance
 - **`Args` now implements `Default`**, derived by parsing an empty argument list
   so it cannot drift from the `default_value_t` attributes. Benchmarks build

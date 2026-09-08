@@ -1,11 +1,38 @@
 [package]
-name = "rudu"
+# Published to crates.io as `rudu-hpc`: the name `rudu` was already taken by an
+# unrelated crate. The *binary* and *library* are still called `rudu` (see the
+# [lib] and [[bin]] sections below), so the command users type, and the
+# `use rudu::...` paths in tests and benches, are unchanged.
+name = "rudu-hpc"
 version = "1.5.0"
 authors = ["Sam Green"]
 edition = "2024"
+description = "A fast, parallel replacement for du, with incremental caching, memory limits, and access-age reporting for HPC scratch filesystems"
 repository = "https://github.com/greensh16/rudu"
+homepage = "https://github.com/greensh16/rudu"
+documentation = "https://github.com/greensh16/rudu/wiki"
+readme = "README.md"
+license = "GPL-3.0-only"
+keywords = ["du", "disk-usage", "filesystem", "cli", "hpc"]
+categories = ["command-line-utilities", "filesystem"]
+exclude = [
+    ".github/*",
+    # Internal code-review notes: useful in the repo, noise in a published crate.
+    "PARALLELISM_REVIEW.md",
+]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+# Keep the library crate named `rudu` despite the package rename, so every
+# `use rudu::...` in tests, benches, and examples keeps working.
+[lib]
+name = "rudu"
+path = "src/lib.rs"
+
+# Keep the installed command named `rudu`, not `rudu-hpc`.
+[[bin]]
+name = "rudu"
+path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }

@@ -77,9 +77,13 @@ cd rudu
 cargo build --release
 cargo install --path .
 
-# From crates.io
-cargo install rudu
+# From crates.io — note the package name is `rudu-hpc`
+cargo install rudu-hpc
 ```
+
+> The crate is published as **`rudu-hpc`** because the name `rudu` on crates.io
+> was already taken by an unrelated project. The installed command is still
+> `rudu`. Do not run `cargo install rudu` — that installs the other tool.
 
 ---
 
