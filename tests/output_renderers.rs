@@ -53,6 +53,7 @@ fn make_args(root: PathBuf) -> Args {
         purge_days: 100,
         older_than: None,
         min_size: None,
+        ..Default::default()
     }
 }
 

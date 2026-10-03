@@ -63,6 +63,7 @@ fn test_inode_counting_with_tempdir() {
         purge_days: 100,
         older_than: None,
         min_size: None,
+        ..Default::default()
     };
 
     let exclude_patterns = expand_exclude_patterns(&args.exclude);
@@ -168,6 +169,7 @@ fn test_exclude_patterns_with_tempdir() {
         purge_days: 100,
         older_than: None,
         min_size: None,
+        ..Default::default()
     };
 
     let exclude_patterns = expand_exclude_patterns(&args.exclude);
@@ -251,6 +253,7 @@ fn test_depth_filtering_with_tempdir() {
         purge_days: 100,
         older_than: None,
         min_size: None,
+        ..Default::default()
     };
 
     let exclude_patterns = expand_exclude_patterns(&args.exclude);
@@ -329,6 +332,7 @@ fn test_size_calculation_with_tempdir() {
         purge_days: 100,
         older_than: None,
         min_size: None,
+        ..Default::default()
     };
 
     let exclude_patterns = expand_exclude_patterns(&args.exclude);
@@ -402,6 +406,7 @@ fn test_memory_limit_with_small_temp_dir() {
         purge_days: 100,
         older_than: None,
         min_size: None,
+        ..Default::default()
     };
 
     let exclude_patterns = expand_exclude_patterns(&args.exclude);
@@ -492,6 +497,7 @@ fn test_incremental_scan_returns_correct_entries() {
         purge_days: 100,
         older_than: None,
         min_size: None,
+        ..Default::default()
     };
 
     let exclude_patterns = expand_exclude_patterns(&args.exclude);
@@ -557,6 +563,7 @@ fn no_cache_args(root: &std::path::Path) -> Args {
         purge_days: 100,
         older_than: None,
         min_size: None,
+        ..Default::default()
     }
 }
 
@@ -706,6 +713,7 @@ fn test_incremental_scan_second_run_uses_cache() {
         purge_days: 100,
         older_than: None,
         min_size: None,
+        ..Default::default()
     };
 
     let exclude_patterns = expand_exclude_patterns(&[]);
@@ -783,6 +791,7 @@ fn test_incremental_scan_cache_correctness() {
         purge_days: 100,
         older_than: None,
         min_size: None,
+        ..Default::default()
     };
 
     let exclude_matcher = build_exclude_matcher(&expand_exclude_patterns(&[])).unwrap();
@@ -1277,4 +1286,78 @@ fn test_min_size_rejects_an_unparseable_threshold() {
         stderr.contains("flurbs"),
         "the error should quote the bad input:\n{stderr}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// HTML stocktake report (--report / --source)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_report_writes_html_for_every_source() {
+    let a = TempDir::new().unwrap();
+    let b = TempDir::new().unwrap();
+    let cache = TempDir::new().unwrap();
+    let out = TempDir::new().unwrap();
+    fs::create_dir(a.path().join("sub")).unwrap();
+    fs::write(a.path().join("sub/one.bin"), vec![1u8; 10_000]).unwrap();
+    fs::write(b.path().join("two.bin"), vec![2u8; 20_000]).unwrap();
+    let report = out.path().join("stocktake.html");
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_rudu"))
+        .args(["--no-cache", "--report"])
+        .arg(&report)
+        .arg("--source")
+        .arg(format!("alpha={}", a.path().display()))
+        .arg(format!("beta={}", b.path().display()))
+        .args(["--report-title", "Test Stocktake"])
+        .env("RUDU_CACHE_DIR", cache.path())
+        .output()
+        .expect("failed to run rudu");
+    assert!(
+        output.status.success(),
+        "rudu failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // The report replaces the table: nothing on stdout.
+    assert!(output.stdout.is_empty());
+
+    let html = fs::read_to_string(&report).expect("report not written");
+    let start = html.find(r#"id="data">"#).unwrap() + r#"id="data">"#.len();
+    let end = start + html[start..].find("</script>").unwrap();
+    let data: serde_json::Value = serde_json::from_str(&html[start..end]).unwrap();
+
+    assert_eq!(data["title"], "Test Stocktake");
+    let sources = data["sources"].as_array().unwrap();
+    let labels: Vec<_> = sources
+        .iter()
+        .map(|s| s["label"].as_str().unwrap())
+        .collect();
+    assert_eq!(labels, ["alpha", "beta"]);
+    // root + sub + one file; root + one file
+    assert_eq!(sources[0]["inodes"], 3);
+    assert_eq!(sources[1]["inodes"], 2);
+    assert!(sources[0]["bytes"].as_u64().unwrap() >= 10_000);
+    assert!(sources[1]["bytes"].as_u64().unwrap() >= 20_000);
+
+    // Every byte and inode is attributed to some owner.
+    let owners = data["owners"].as_array().unwrap();
+    let sum = |key: &str, label: &str| -> u64 {
+        owners.iter().filter_map(|o| o[key][label].as_u64()).sum()
+    };
+    assert_eq!(sum("b", "alpha"), sources[0]["bytes"].as_u64().unwrap());
+    assert_eq!(sum("i", "beta"), 2);
+}
+
+#[test]
+fn test_report_rejects_missing_source_before_scanning() {
+    let out = TempDir::new().unwrap();
+    let report = out.path().join("r.html");
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_rudu"))
+        .args(["--no-cache", "--report"])
+        .arg(&report)
+        .args(["--source", "/definitely/not/a/real/dir"])
+        .output()
+        .expect("failed to run rudu");
+    assert!(!output.status.success());
+    assert!(!report.exists());
 }

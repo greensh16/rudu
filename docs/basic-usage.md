@@ -27,6 +27,9 @@ rudu [PATH] [OPTIONS]
 | `--cache-ttl <SECONDS>` | Cache TTL in seconds (default: 604800 = 7 days) |
 | `--profile` | Enable performance profiling and show timing summary |
 | `--min-size <SIZE>` | Hide entries smaller than SIZE (e.g. `10MB`, `1.5GiB`, `4096`) |
+| `--report <FILE>` | Write an HTML stocktake report instead of a table (see below) |
+| `--source <[LABEL=]PATH>...` | Data sources for `--report` (default: PATH) |
+| `--report-title <TEXT>` | Title of the `--report` page (default: `Data Stocktake`) |
 | `--show-atime` | Show last access time and access age in days |
 | `--purge-days <DAYS>` | Access-age threshold for "at risk" reporting (default: 100) |
 | `--older-than <DAYS>` | Only show entries not accessed for at least DAYS days (implies `--show-atime`) |
@@ -445,3 +448,27 @@ adds `atime`, `atime_unix`, `age_days`, and `at_risk_bytes` columns.
 - **Cross-platform compatibility** with consistent behavior
 
 The tool's Rust implementation ensures memory safety while delivering excellent performance through parallel processing and smart caching mechanisms.
+
+### Stocktake Reports
+
+`--report` scans several data sources and writes a single self-contained HTML
+page showing who owns the data, how much of it has not been accessed for
+`--purge-days` (default 100) days, and who is using the inodes:
+
+```bash
+rudu --report gadi_stocktake.html \
+     --source /g/data/gb02 /g/data/if69 /g/data/fy29 /g/data/ng72 /g/data/su28 \
+     --report-title "Gadi Data Stocktake"
+```
+
+Each source is labelled with its directory name (`gb02`, `if69`, …); write
+`--source climate=/g/data/gb02` to choose a label yourself. The page has summary
+tiles, a bar per source split by access age, a searchable per-owner chart
+(storage or inodes, coloured by source or by access age), and a sortable table.
+Open it in any browser; it needs no server.
+
+Sources are scanned one after another and only their totals are kept, so memory
+use is that of the largest source. `--exclude`, `--memory-limit`, `--threads`,
+and the cache all apply as usual. For a large stocktake on an HPC system, run it
+as a batch job and copy the HTML file back to view it.
+

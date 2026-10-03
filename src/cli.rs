@@ -109,6 +109,38 @@ pub struct Args {
     #[arg(long, value_name = "SIZE", value_parser = crate::utils::parse_size)]
     pub min_size: Option<u64>,
 
+    /// Write an HTML stocktake report to FILE instead of printing a table
+    ///
+    /// Scans every `--source` (or PATH, if no sources are given) and reports
+    /// storage, inodes, and access age per owner and per source. Implies
+    /// owner resolution; `--depth`, `--sort`, `--older-than`, and `--min-size`
+    /// do not apply. `--purge-days` sets the "not accessed" threshold.
+    #[arg(long, value_name = "FILE", conflicts_with = "output")]
+    pub report: Option<PathBuf>,
+
+    /// Data sources for --report: directories to scan, as PATH or LABEL=PATH
+    ///
+    /// Without a label, the directory's own name is used, so
+    /// `--source /g/data/gb02 /g/data/if69` reports `gb02` and `if69`.
+    #[arg(
+        long,
+        value_name = "[LABEL=]PATH",
+        num_args = 1..,
+        action = clap::ArgAction::Append,
+        value_parser = crate::report::parse_source,
+        requires = "report"
+    )]
+    pub source: Vec<crate::report::Source>,
+
+    /// Title shown at the top of the --report page
+    #[arg(
+        long,
+        value_name = "TEXT",
+        default_value = "Data Stocktake",
+        requires = "report"
+    )]
+    pub report_title: String,
+
     /// Memory check interval in milliseconds for memory monitoring (hidden experimental flag)
     #[arg(
         long = "memory-check-interval-ms",
@@ -214,6 +246,8 @@ mod tests {
         assert_eq!(args.purge_days, 100);
         assert_eq!(args.older_than, None);
         assert_eq!(args.min_size, None);
+        assert_eq!(args.report, None);
+        assert!(args.source.is_empty());
     }
 
     #[test]
@@ -265,6 +299,28 @@ mod tests {
         assert_eq!(args.purge_days, 30);
 
         assert!(Args::try_parse_from(["rudu", "--older-than", "soon"]).is_err());
+    }
+
+    #[test]
+    fn test_report_flag_parsing() {
+        let args = Args::try_parse_from([
+            "rudu",
+            "--report",
+            "stocktake.html",
+            "--source",
+            "/g/data/gb02",
+            "proj=/g/data/if69",
+        ])
+        .unwrap();
+        assert_eq!(args.report, Some(PathBuf::from("stocktake.html")));
+        let labels: Vec<_> = args.source.iter().map(|s| s.label.as_str()).collect();
+        assert_eq!(labels, ["gb02", "proj"]);
+        assert_eq!(args.source[1].path, PathBuf::from("/g/data/if69"));
+
+        // Sources only mean something for a report, and a report replaces the
+        // CSV output rather than adding to it.
+        assert!(Args::try_parse_from(["rudu", "--source", "/tmp"]).is_err());
+        assert!(Args::try_parse_from(["rudu", "--report", "r.html", "--output", "o.csv"]).is_err());
     }
 
     #[test]

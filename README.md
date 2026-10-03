@@ -27,6 +27,7 @@ rudu /project --exclude .git --output out.csv # exclude .git, export to CSV
 rudu /lustre --memory-limit 900 --no-cache    # HPC cluster with 1 GB job limit
 rudu /scratch/ab12 --older-than 100 --sort size  # what a 100-day purge will take
 rudu /project --min-size 10MB                 # hide anything under 10 MB
+rudu --report stocktake.html --source /g/data/gb02 /g/data/if69  # HTML stocktake
 ```
 
 For the full options reference and annotated examples, see [docs/basic-usage.md](docs/basic-usage.md).
@@ -41,6 +42,7 @@ For the full options reference and annotated examples, see [docs/basic-usage.md]
 - **Flexible output** — terminal table or `--output report.csv`
 - **Owner & inode info** — `--show-owner`, `--show-inodes`
 - **Access-age reporting** — `--show-atime` shows how close data is to a scratch purge policy (NCI `/scratch`: 100 days); `--older-than`, `--purge-days`
+- **HTML stocktake report** — `--report FILE --source PATH...` scans several data sources (e.g. NCI projects) and writes one self-contained page: storage, inodes, and access age per owner and per source, with an interactive chart and sortable table
 - **Incremental caching** — skips unchanged subtrees on repeat scans; `--no-cache`, `--cache-ttl`
 - **Memory limiting** — `--memory-limit MB` for HPC/SLURM jobs; graceful degradation at 95 % of limit
 - **Performance profiling** — `--profile` prints per-phase timing

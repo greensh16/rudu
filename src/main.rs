@@ -27,6 +27,7 @@
 use anyhow::Result;
 use clap::Parser;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 // All modules live in the library crate (src/lib.rs). Previously main.rs
 // declared its own copies of every module, compiling the whole tree twice
@@ -40,7 +41,7 @@ use rudu::metrics::{
 use rudu::scan::{self, scan_files_and_dirs};
 use rudu::thread_pool::{ThreadPoolStrategy, configure_pool};
 use rudu::utils::{build_exclude_matcher, expand_exclude_patterns, path_depth};
-use rudu::{memory, output};
+use rudu::{memory, output, report};
 
 /// Sets up the thread pool configuration based on CLI arguments.
 fn setup_thread_pool(args: &Args) -> Result<()> {
@@ -132,6 +133,80 @@ fn output_results(entries: &[FileEntry], args: &Args, root: &Path, now: u64) -> 
     }
 }
 
+/// `--report`: scans each source in turn and writes the HTML stocktake.
+///
+/// Each source's entries are folded into the running totals and dropped before
+/// the next scan starts, so peak memory is that of the largest source alone.
+fn run_report(
+    report_path: &Path,
+    args: &Args,
+    exclude_matcher: &globset::GlobSet,
+    memory_monitor: Option<Arc<Mutex<memory::MemoryMonitor>>>,
+    now: u64,
+) -> Result<()> {
+    let sources = if args.source.is_empty() {
+        vec![report::Source {
+            label: report::default_label(&args.path),
+            path: args.path.clone(),
+        }]
+    } else {
+        args.source.clone()
+    };
+    report::validate_sources(&sources)?;
+
+    // The report is a per-owner rollup, so owners are always resolved.
+    let mut scan_args = args.clone();
+    scan_args.show_owner = true;
+
+    let mut stocktake = report::Stocktake::new(args.purge_days, now);
+    for (n, source) in sources.iter().enumerate() {
+        eprintln!(
+            "[{}/{}] Scanning {} ({})",
+            n + 1,
+            sources.len(),
+            source.label,
+            source.path.display()
+        );
+        let result = if memory_monitor.is_some() {
+            scan::scan_files_and_dirs_with_memory_monitor(
+                &source.path,
+                &scan_args,
+                exclude_matcher,
+                scan_args.sort,
+                memory_monitor.clone(),
+            )?
+        } else {
+            scan_files_and_dirs(&source.path, &scan_args, exclude_matcher, scan_args.sort)?
+        };
+        if result.memory_limit_hit {
+            eprintln!(
+                "WARNING: Memory limit reached while scanning {}; its totals are partial.",
+                source.label
+            );
+        }
+        stocktake.add_source(source, &result.entries, result.memory_limit_hit);
+    }
+
+    let meta = report::ReportMeta {
+        title: args.report_title.clone(),
+        command: std::env::args().collect::<Vec<_>>().join(" "),
+    };
+    stocktake.write(report_path, &meta)?;
+
+    for s in stocktake.sources() {
+        eprintln!(
+            "{:>12}  {:>10}  {:>3}% not accessed for {}+ days  {} inodes",
+            s.label,
+            humansize::format_size(s.bytes, humansize::DECIMAL),
+            (s.stale * 100).checked_div(s.bytes).unwrap_or(0),
+            args.purge_days,
+            s.inodes
+        );
+    }
+    eprintln!("Report written to {}", report_path.display());
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let mut args = Args::parse();
     // Asking to filter by access age without asking to see it would print a
@@ -205,10 +280,20 @@ fn main() -> Result<()> {
             memory_limit_mb,
             modified_args.memory_check_interval_ms,
         );
-        Some(std::sync::Arc::new(std::sync::Mutex::new(monitor)))
+        Some(Arc::new(Mutex::new(monitor)))
     } else {
         None
     };
+
+    if let Some(report_path) = &args.report {
+        return run_report(
+            report_path,
+            &modified_args,
+            &exclude_matcher,
+            memory_monitor,
+            now,
+        );
+    }
 
     // Time the scanning phase
     let scan_timer = if args.profile {

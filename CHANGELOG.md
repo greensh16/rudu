@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Features
+
+#### `--report`: multi-source HTML stocktake
+- `rudu --report stocktake.html --source /g/data/gb02 /g/data/if69 ...` scans
+  each source and writes one self-contained HTML page answering "who owns the
+  data here, how much of it is past the purge threshold, and who is using the
+  inodes?": summary tiles, a per-source bar split by access age, a per-owner
+  chart (storage or inodes, coloured by source or access age, searchable), and
+  a sortable full table. It replaces the manual CSV-and-spreadsheet workflow
+  used for project stocktakes on Gadi.
+- Sources are `PATH` or `LABEL=PATH`; the label defaults to the directory name.
+  With no `--source`, the positional PATH is the single source. Every source is
+  checked to exist, with a unique label, before any scanning starts.
+- Sources are scanned one at a time and folded into per-owner totals before the
+  next scan, so peak memory is that of the largest source, not their sum. The
+  cache, `--exclude`, `--memory-limit`, and `--purge-days` all apply; a source
+  cut short by the memory limit is flagged on the page as a lower bound.
+- Bytes are summed over files by each file's own owner. Hard links count once
+  per link and directories' own blocks are not attributed, so totals can differ
+  slightly from `du`; the page footer says so.
+
 ## [1.5.1] - 2026-09-08
 
 ### Bug Fixes
