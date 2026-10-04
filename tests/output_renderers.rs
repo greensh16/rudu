@@ -19,6 +19,7 @@ fn make_test_entries() -> Vec<FileEntry> {
             entry_type: EntryType::Dir,
             atime: None,
             at_risk_bytes: None,
+            link_id: None,
         },
         FileEntry {
             path: PathBuf::from("/test/file1.txt"),
@@ -28,6 +29,7 @@ fn make_test_entries() -> Vec<FileEntry> {
             entry_type: EntryType::File,
             atime: None,
             at_risk_bytes: None,
+            link_id: None,
         },
     ]
 }
@@ -118,6 +120,7 @@ fn test_csv_renderer_handles_none_owner_and_inodes() {
             entry_type: EntryType::File,
             atime: None,
             at_risk_bytes: None,
+            link_id: None,
         },
         FileEntry {
             path: PathBuf::from("/test/dir-no-meta"),
@@ -127,6 +130,7 @@ fn test_csv_renderer_handles_none_owner_and_inodes() {
             entry_type: EntryType::Dir,
             atime: None,
             at_risk_bytes: None,
+            link_id: None,
         },
     ];
 

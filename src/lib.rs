@@ -15,6 +15,7 @@
 //! - [`cache`]: Disk-based caching system for improved performance
 //! - [`data`]: Core data structures (`FileEntry`, `EntryType`)
 //! - [`cli`]: Command-line interface definitions
+//! - [`filter`]: Display filters applied after the scan (`--depth`, `--min-size`, …)
 //! - [`output`]: Modular output formatters (terminal, CSV)
 //! - [`report`]: Multi-source HTML stocktake report (`--report`)
 //! - [`scan`]: File system scanning functionality
@@ -25,6 +26,7 @@ pub mod atime;
 pub mod cache;
 pub mod cli;
 pub mod data;
+pub mod filter;
 pub mod memory;
 pub mod metrics;
 pub mod output;

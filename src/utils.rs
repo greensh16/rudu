@@ -414,6 +414,102 @@ pub fn parse_size(input: &str) -> Result<u64, String> {
     Ok(bytes.round() as u64)
 }
 
+/// Default thread cap on network and parallel filesystems (see
+/// [`network_fs_type`]). Each `lstat` there is a metadata-server round trip
+/// shared with every other user, so all-cores parallelism on a 64-core node
+/// can slow the filesystem for everyone without making the scan much faster.
+pub const NETWORK_FS_THREADS: usize = 8;
+
+/// Names the filesystem holding `path` if it is a network or parallel
+/// filesystem (Lustre, NFS, GPFS, BeeGFS, CephFS, SMB, …), else `None`.
+///
+/// One `statfs` call; no pre-scan. Returns `None` when the type cannot be
+/// determined, so an unrecognised filesystem keeps the all-cores default.
+/// FUSE is deliberately not listed: it fronts local and remote filesystems
+/// alike, and its magic number cannot tell them apart.
+pub fn network_fs_type(path: &Path) -> Option<&'static str> {
+    let c_path = CString::new(path.as_os_str().as_bytes()).ok()?;
+    let mut buf = MaybeUninit::<libc::statfs>::uninit();
+    // SAFETY: c_path is NUL-terminated and buf is valid for writes; statfs
+    // fully initialises buf on success, and we only read it in that case.
+    if unsafe { libc::statfs(c_path.as_ptr(), buf.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    let buf = unsafe { buf.assume_init() };
+    fs_type_name(&buf)
+}
+
+#[cfg(target_os = "linux")]
+fn fs_type_name(buf: &libc::statfs) -> Option<&'static str> {
+    // `f_type` is `i64` on glibc and `u64` on musl, so the cast is redundant
+    // on one of them; magic numbers are 32-bit, so mask after widening.
+    #[allow(clippy::unnecessary_cast)]
+    let magic = (buf.f_type as u64) & 0xFFFF_FFFF;
+    Some(match magic {
+        0x0BD0_0BD0 => "lustre",
+        0x0000_6969 => "nfs",
+        0x4750_4653 => "gpfs",
+        0x1983_0326 => "beegfs",
+        0x00C3_6400 => "cephfs",
+        0xAAD7_AAEA => "panfs",
+        0x5346_414F => "afs",
+        0x0102_1997 => "9p",
+        0x0000_517B => "smb",
+        0xFF53_4D42 => "cifs",
+        0xFE53_4D42 => "smb2",
+        _ => return None,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn fs_type_name(buf: &libc::statfs) -> Option<&'static str> {
+    // SAFETY: the kernel NUL-terminates f_fstypename within its fixed array.
+    let name = unsafe { CStr::from_ptr(buf.f_fstypename.as_ptr()) };
+    Some(match name.to_bytes() {
+        b"nfs" => "nfs",
+        b"smbfs" => "smb",
+        b"afpfs" => "afp",
+        b"webdav" => "webdav",
+        _ => return None,
+    })
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn fs_type_name(_buf: &libc::statfs) -> Option<&'static str> {
+    None
+}
+
+/// Directory names skipped by `--auto-exclude`: version-control metadata,
+/// dependency trees, build output, and tool caches — things that are
+/// regenerable and rarely what a "where did my space go" question is about.
+///
+/// Opt-in, never a default: excluding these changes totals so they no longer
+/// match `du`, and on shared storage a directory called `target` or `build`
+/// can just as easily be real data.
+pub const AUTO_EXCLUDES: &[&str] = &[
+    ".git",
+    ".hg",
+    ".svn",
+    "node_modules",
+    "target",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".tox",
+];
+
+/// Appends [`AUTO_EXCLUDES`] to `patterns`, skipping any already present.
+pub fn with_auto_excludes(patterns: &[String]) -> Vec<String> {
+    let mut out = patterns.to_vec();
+    for name in AUTO_EXCLUDES {
+        if !out.iter().any(|p| p.trim().trim_end_matches('/') == *name) {
+            out.push((*name).to_string());
+        }
+    }
+    out
+}
+
 /// FNV-1a 64-bit hasher, implemented inline (previously the `fnv` crate).
 ///
 /// The offset basis and prime are identical to `fnv::FnvHasher`, so hash
@@ -451,4 +547,59 @@ pub fn path_hash(path: &Path) -> u64 {
     let mut hasher = Fnv1aHasher::default();
     path.hash(&mut hasher);
     hasher.finish()
+}
+
+#[cfg(test)]
+mod fs_type_tests {
+    use super::*;
+
+    fn zeroed_statfs() -> libc::statfs {
+        // SAFETY: statfs is a plain C struct; all-zero is a valid value.
+        unsafe { std::mem::zeroed() }
+    }
+
+    #[test]
+    fn test_local_temp_dir_is_not_a_network_filesystem() {
+        let dir = tempfile::TempDir::new().unwrap();
+        assert_eq!(network_fs_type(dir.path()), None);
+    }
+
+    #[test]
+    fn test_unknown_filesystem_type_keeps_the_default() {
+        assert_eq!(fs_type_name(&zeroed_statfs()), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_linux_magic_numbers() {
+        let mut buf = zeroed_statfs();
+        for (magic, name) in [
+            (0x0BD0_0BD0u32, "lustre"),
+            (0x6969, "nfs"),
+            (0x4750_4653, "gpfs"),
+            (0xFF53_4D42, "cifs"),
+        ] {
+            buf.f_type = magic as _;
+            assert_eq!(fs_type_name(&buf), Some(name));
+        }
+        buf.f_type = 0xEF53 as _; // ext4
+        assert_eq!(fs_type_name(&buf), None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_macos_type_names() {
+        let mut buf = zeroed_statfs();
+        for (raw, name) in [
+            (&b"nfs\0"[..], Some("nfs")),
+            (b"smbfs\0", Some("smb")),
+            (b"apfs\0", None),
+        ] {
+            buf.f_fstypename = [0; 16];
+            for (dst, &src) in buf.f_fstypename.iter_mut().zip(raw) {
+                *dst = src as libc::c_char;
+            }
+            assert_eq!(fs_type_name(&buf), name);
+        }
+    }
 }

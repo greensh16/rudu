@@ -14,11 +14,15 @@
 //! # What is counted
 //!
 //! - **Bytes** are summed over leaf (`FILE`) entries, attributed to each leaf's
-//!   own owner. A directory's own blocks are not attributed to anyone, and hard
-//!   links count once per link name (directory totals elsewhere in rudu dedup
-//!   by inode, but a per-owner rollup has no single right owner for a shared
-//!   inode). Totals can therefore differ slightly from `du` on the same tree.
-//! - **Inodes** are files plus directories, each attributed to its own owner.
+//!   own owner. A directory's own blocks are not attributed to anyone, so
+//!   totals run a few KB per directory below `du`.
+//! - **Hard links count once**, by `(dev, ino)`, across *all* sources — a link
+//!   shared by two projects is counted in whichever source is scanned first.
+//!   Every link to an inode has the same owner, so attribution is unambiguous.
+//!   Link identities are cached alongside each file, so this holds on cache-hit
+//!   runs too.
+//! - **Inodes** are files plus directories, each attributed to its own owner;
+//!   a hard-linked inode is counted once, as quota tools do.
 //! - **Stale bytes** are leaves whose access age is at or past `--purge-days`.
 //!   A leaf with no readable atime is never counted stale. As with the rest of
 //!   [`crate::atime`], cached atimes only ever over-state age.
@@ -27,7 +31,7 @@ use crate::atime::age_days;
 use crate::data::{EntryType, FileEntry};
 use anyhow::{Context, Result};
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
 const TEMPLATE: &str = include_str!("template.html");
@@ -143,6 +147,8 @@ pub struct Stocktake {
     now: u64,
     sources: Vec<SourceTotals>,
     owners: BTreeMap<String, OwnerTotals>,
+    /// Inodes of multi-link files already counted, across every source.
+    seen_links: HashSet<(u64, u64)>,
 }
 
 /// Run details shown in the report's header and footer.
@@ -173,6 +179,7 @@ impl Stocktake {
             now,
             sources: Vec::new(),
             owners: BTreeMap::new(),
+            seen_links: HashSet::new(),
         }
     }
 
@@ -180,7 +187,8 @@ impl Stocktake {
     ///
     /// `entries` must be the full, unfiltered scan of `source` with owners
     /// populated (`show_owner`). Directory sizes are ignored — they are
-    /// aggregates of the leaves already counted.
+    /// aggregates of the leaves already counted. Leaves sharing a `link_id`
+    /// with one already seen, in this or an earlier source, are skipped.
     pub fn add_source(&mut self, source: &Source, entries: &[FileEntry], partial: bool) {
         let label = &source.label;
         let mut totals = SourceTotals {
@@ -191,6 +199,12 @@ impl Stocktake {
         };
 
         for entry in entries {
+            // Another link to an inode already counted: same data, same owner.
+            if let Some(id) = entry.link_id
+                && !self.seen_links.insert(id)
+            {
+                continue;
+            }
             let name = entry.owner.as_deref().unwrap_or(UNKNOWN_OWNER);
             let owner = self
                 .owners

@@ -1361,3 +1361,149 @@ fn test_report_rejects_missing_source_before_scanning() {
     assert!(!output.status.success());
     assert!(!report.exists());
 }
+
+// ---------------------------------------------------------------------------
+// v1.6.0: --max-size, --auto-exclude, --format json, report hard-link dedup
+// ---------------------------------------------------------------------------
+
+/// Runs the binary with `--no-cache` and an isolated cache dir; returns stdout.
+fn run_rudu(args: &[&std::ffi::OsStr]) -> String {
+    let cache = TempDir::new().unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_rudu"))
+        .arg("--no-cache")
+        .args(args)
+        .env("RUDU_CACHE_DIR", cache.path())
+        .output()
+        .expect("failed to run rudu");
+    assert!(
+        output.status.success(),
+        "rudu failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap()
+}
+
+fn json_of(root: &std::path::Path, extra: &[&str]) -> serde_json::Value {
+    let mut args: Vec<&std::ffi::OsStr> =
+        vec![root.as_os_str(), "--format".as_ref(), "json".as_ref()];
+    args.extend(extra.iter().map(|s| std::ffi::OsStr::new(*s)));
+    serde_json::from_str(&run_rudu(&args)).expect("stdout is one JSON document")
+}
+
+fn row_paths(doc: &serde_json::Value) -> Vec<String> {
+    doc["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["path"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn test_json_output_matches_csv_rows_and_reports_whole_scan_totals() {
+    let dir = TempDir::new().unwrap();
+    fs::create_dir(dir.path().join("sub")).unwrap();
+    fs::write(dir.path().join("sub/a.bin"), vec![0u8; 50_000]).unwrap();
+    fs::write(dir.path().join("b.txt"), b"hello").unwrap();
+
+    let doc = json_of(dir.path(), &["--depth", "1"]);
+    assert_eq!(doc["scan_info"]["schema_version"], 1);
+    assert_eq!(doc["scan_info"]["filters"]["depth"], 1);
+
+    // Same rows, same order, same sizes as CSV.
+    let csv = run_rudu(&[
+        dir.path().as_os_str(),
+        "--format".as_ref(),
+        "csv".as_ref(),
+        "--depth".as_ref(),
+        "1".as_ref(),
+    ]);
+    let csv_rows: Vec<(String, u64)> = csv
+        .lines()
+        .skip(1)
+        .map(|l| {
+            let f: Vec<&str> = l.split(',').collect();
+            (f[4].to_string(), f[1].parse().unwrap())
+        })
+        .collect();
+    let json_rows: Vec<(String, u64)> = doc["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| {
+            (
+                e["path"].as_str().unwrap().to_string(),
+                e["size_bytes"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(json_rows, csv_rows);
+
+    // Summary covers the whole scan even though --depth hid sub/a.bin.
+    let summary = &doc["summary"];
+    assert_eq!(summary["files"], 2);
+    assert_eq!(summary["dirs"], 2);
+    assert_eq!(summary["entries_shown"], 3);
+    assert!(summary["total_bytes"].as_u64().unwrap() >= 50_000);
+    assert!(summary["access_age"].is_null());
+}
+
+#[test]
+fn test_max_size_hides_large_entries_end_to_end() {
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join("small.txt"), b"x").unwrap();
+    fs::write(dir.path().join("large.bin"), vec![0u8; 2_000_000]).unwrap();
+
+    let doc = json_of(dir.path(), &["--max-size", "100KB"]);
+    let paths = row_paths(&doc);
+    assert!(paths.iter().any(|p| p.ends_with("small.txt")));
+    assert!(!paths.iter().any(|p| p.ends_with("large.bin")));
+    // The root's total still includes the hidden file — it just isn't shown.
+    assert!(doc["summary"]["total_bytes"].as_u64().unwrap() >= 2_000_000);
+}
+
+#[test]
+fn test_auto_exclude_is_opt_in() {
+    let dir = TempDir::new().unwrap();
+    fs::create_dir_all(dir.path().join("node_modules/pkg")).unwrap();
+    fs::write(dir.path().join("node_modules/pkg/index.js"), b"x").unwrap();
+    fs::create_dir(dir.path().join(".git")).unwrap();
+    fs::write(dir.path().join(".git/HEAD"), b"ref").unwrap();
+    fs::write(dir.path().join("keep.txt"), b"x").unwrap();
+
+    let has = |paths: &[String], needle: &str| paths.iter().any(|p| p.contains(needle));
+
+    // Default: everything counted, so totals keep matching du.
+    let all = row_paths(&json_of(dir.path(), &[]));
+    assert!(has(&all, "node_modules") && has(&all, ".git"));
+
+    let pruned = row_paths(&json_of(dir.path(), &["--auto-exclude"]));
+    assert!(!has(&pruned, "node_modules") && !has(&pruned, ".git"));
+    assert!(has(&pruned, "keep.txt"));
+}
+
+#[test]
+fn test_report_counts_hard_links_once() {
+    let src = TempDir::new().unwrap();
+    let out = TempDir::new().unwrap();
+    fs::write(src.path().join("orig.bin"), vec![7u8; 100_000]).unwrap();
+    fs::hard_link(src.path().join("orig.bin"), src.path().join("link.bin")).unwrap();
+    let report = out.path().join("r.html");
+
+    run_rudu(&[
+        "--report".as_ref(),
+        report.as_os_str(),
+        src.path().as_os_str(),
+    ]);
+    let html = fs::read_to_string(&report).unwrap();
+    let start = html.find(r#"id="data">"#).unwrap() + r#"id="data">"#.len();
+    let end = start + html[start..].find("</script>").unwrap();
+    let data: serde_json::Value = serde_json::from_str(&html[start..end]).unwrap();
+
+    let source = &data["sources"][0];
+    // One inode's blocks, not two; root dir + one inode.
+    let one_copy = fs::metadata(src.path().join("orig.bin")).unwrap();
+    let blocks = std::os::unix::fs::MetadataExt::blocks(&one_copy) * 512;
+    assert_eq!(source["bytes"].as_u64().unwrap(), blocks);
+    assert_eq!(source["inodes"], 2);
+}

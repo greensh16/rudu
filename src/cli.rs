@@ -48,13 +48,29 @@ pub struct Args {
     #[arg(long, value_name = "PATTERN", num_args = 1.., action = clap::ArgAction::Append)]
     pub exclude: Vec<String>,
 
+    /// Also exclude common noise directories (.git, node_modules, target,
+    /// __pycache__, tool caches)
+    ///
+    /// Off by default, because it changes totals so they no longer match `du`.
+    /// The full list is printed to stderr when it is applied.
+    #[arg(long, default_value_t = false)]
+    pub auto_exclude: bool,
+
     /// Show owner (username) of each file/directory
     #[arg(long, default_value_t = false)]
     pub show_owner: bool,
 
-    /// Write output to a CSV file instead of stdout
+    /// Write output to FILE instead of stdout (CSV unless --format says otherwise)
     #[arg(long, value_name = "FILE")]
     pub output: Option<PathBuf>,
+
+    /// Output format: table (terminal), csv, or json
+    ///
+    /// Defaults to `table` on stdout, or `csv` when --output is given, as
+    /// before. `--format csv` or `--format json` without --output writes to
+    /// stdout. `table` cannot be written to a file.
+    #[arg(long, value_enum, conflicts_with = "report")]
+    pub format: Option<OutputFormat>,
 
     /// Limit the number of CPU threads used (default: use all available)
     #[arg(long, value_name = "N")]
@@ -108,6 +124,14 @@ pub struct Args {
     /// use KiB/MiB/GiB for powers of 1024.
     #[arg(long, value_name = "SIZE", value_parser = crate::utils::parse_size)]
     pub min_size: Option<u64>,
+
+    /// Hide entries larger than SIZE (e.g. 100MB, 2GiB)
+    ///
+    /// The upper-bound counterpart to `--min-size`, with the same units. A
+    /// display filter only: hidden entries still count toward their parents'
+    /// totals. Combine the two for a size band: `--min-size 1MB --max-size 10MB`.
+    #[arg(long, value_name = "SIZE", value_parser = crate::utils::parse_size)]
+    pub max_size: Option<u64>,
 
     /// Write an HTML stocktake report to FILE instead of printing a table
     ///
@@ -163,6 +187,36 @@ impl Default for Args {
     fn default() -> Self {
         Args::try_parse_from(["rudu"]).expect("Args has a default for every field")
     }
+}
+
+impl Args {
+    /// The output format this run will use, after applying defaults.
+    ///
+    /// # Errors
+    /// `--format table` together with `--output`: the table is for terminals,
+    /// and silently writing CSV instead would surprise.
+    pub fn output_format(&self) -> anyhow::Result<OutputFormat> {
+        match (self.format, &self.output) {
+            (Some(OutputFormat::Table), Some(_)) => anyhow::bail!(
+                "--format table writes to the terminal; use --format csv or \
+                 --format json with --output"
+            ),
+            (Some(format), _) => Ok(format),
+            (None, Some(_)) => Ok(OutputFormat::Csv),
+            (None, None) => Ok(OutputFormat::Table),
+        }
+    }
+}
+
+/// Output format selected by `--format` (see [`Args::output_format`]).
+#[derive(Copy, Clone, PartialEq, Eq, ValueEnum, Debug)]
+pub enum OutputFormat {
+    /// Human-readable table on stdout
+    Table,
+    /// CSV, one row per entry
+    Csv,
+    /// One JSON document; schema in docs/json-schema.md
+    Json,
 }
 
 /// Enum for specifying how to sort scan results.
@@ -246,6 +300,9 @@ mod tests {
         assert_eq!(args.purge_days, 100);
         assert_eq!(args.older_than, None);
         assert_eq!(args.min_size, None);
+        assert_eq!(args.max_size, None);
+        assert_eq!(args.format, None);
+        assert!(!args.auto_exclude);
         assert_eq!(args.report, None);
         assert!(args.source.is_empty());
     }
@@ -299,6 +356,27 @@ mod tests {
         assert_eq!(args.purge_days, 30);
 
         assert!(Args::try_parse_from(["rudu", "--older-than", "soon"]).is_err());
+    }
+
+    #[test]
+    fn test_output_format_defaults_and_conflicts() {
+        let fmt = |argv: &[&str]| {
+            let mut full = vec!["rudu"];
+            full.extend_from_slice(argv);
+            Args::try_parse_from(full).unwrap().output_format()
+        };
+        assert_eq!(fmt(&[]).unwrap(), OutputFormat::Table);
+        // --output alone keeps meaning CSV, as it always has.
+        assert_eq!(fmt(&["--output", "o.csv"]).unwrap(), OutputFormat::Csv);
+        assert_eq!(fmt(&["--format", "json"]).unwrap(), OutputFormat::Json);
+        assert_eq!(
+            fmt(&["--format", "json", "--output", "o.json"]).unwrap(),
+            OutputFormat::Json
+        );
+        assert_eq!(fmt(&["--format", "csv"]).unwrap(), OutputFormat::Csv);
+        assert!(fmt(&["--format", "table", "--output", "o.txt"]).is_err());
+        assert!(Args::try_parse_from(["rudu", "--format", "xml"]).is_err());
+        assert!(Args::try_parse_from(["rudu", "--format", "json", "--report", "r.html"]).is_err());
     }
 
     #[test]

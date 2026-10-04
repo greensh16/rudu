@@ -29,6 +29,7 @@ fn test_sort_entries() {
             entry_type: EntryType::File,
             atime: None,
             at_risk_bytes: None,
+            link_id: None,
         },
         FileEntry {
             path: PathBuf::from("/home/user/a.txt"),
@@ -38,6 +39,7 @@ fn test_sort_entries() {
             entry_type: EntryType::File,
             atime: None,
             at_risk_bytes: None,
+            link_id: None,
         },
         FileEntry {
             path: PathBuf::from("/home/user/c.txt"),
@@ -47,6 +49,7 @@ fn test_sort_entries() {
             entry_type: EntryType::File,
             atime: None,
             at_risk_bytes: None,
+            link_id: None,
         },
     ];
 
@@ -222,6 +225,7 @@ fn test_sort_entries_size_ties_are_stable_by_relative_order() {
             entry_type: EntryType::File,
             atime: None,
             at_risk_bytes: None,
+            link_id: None,
         },
         FileEntry {
             path: PathBuf::from("/second"),
@@ -231,6 +235,7 @@ fn test_sort_entries_size_ties_are_stable_by_relative_order() {
             entry_type: EntryType::File,
             atime: None,
             at_risk_bytes: None,
+            link_id: None,
         },
     ];
     sort_entries(&mut entries, SortKey::Size);
@@ -257,6 +262,7 @@ fn test_sort_entries_single_entry_unchanged() {
         entry_type: EntryType::Dir,
         atime: None,
         at_risk_bytes: None,
+        link_id: None,
     }];
     sort_entries(&mut entries, SortKey::Size);
     assert_eq!(entries[0].path, PathBuf::from("/only"));

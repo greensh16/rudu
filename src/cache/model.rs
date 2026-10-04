@@ -62,6 +62,10 @@ pub struct CacheEntry {
     /// cache hit. atime only moves forward, so this over-states age and
     /// therefore purge risk; it never reports at-risk data as safe.
     pub atime: Option<u64>,
+    /// `(st_dev, st_ino)` for a file with more than one hard link, so a
+    /// restored subtree can still be deduplicated by `--report`. `None` for
+    /// directories and single-link files. Set with [`CacheEntry::with_link_id`].
+    pub link_id: Option<(u64, u64)>,
 }
 
 /// Named parameters for constructing a [`CacheEntry`].
@@ -194,7 +198,14 @@ impl CacheEntry {
             owner: params.owner,
             entry_type: params.entry_type,
             atime: params.atime,
+            link_id: None,
         }
+    }
+
+    /// Records the inode identity of a multi-link file (see [`Self::link_id`]).
+    pub fn with_link_id(mut self, link_id: Option<(u64, u64)>) -> Self {
+        self.link_id = link_id;
+        self
     }
 
     /// Check if this cache entry is still valid compared to current metadata

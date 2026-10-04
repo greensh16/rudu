@@ -33,18 +33,26 @@ use std::sync::{Arc, Mutex};
 // declared its own copies of every module, compiling the whole tree twice
 // and giving the binary distinct copies of library statics.
 use rudu::atime;
-use rudu::cli::Args;
+use rudu::cli::{Args, OutputFormat};
 use rudu::data::{EntryType, FileEntry};
+use rudu::filter::process_entries;
 use rudu::metrics::{
     PhaseTimer, ProfileData, print_profile_summary, rss_after_phase, save_stats_json,
 };
 use rudu::scan::{self, scan_files_and_dirs};
 use rudu::thread_pool::{ThreadPoolStrategy, configure_pool};
-use rudu::utils::{build_exclude_matcher, expand_exclude_patterns, path_depth};
+use rudu::utils::{
+    AUTO_EXCLUDES, NETWORK_FS_THREADS, build_exclude_matcher, expand_exclude_patterns,
+    network_fs_type, with_auto_excludes,
+};
 use rudu::{memory, output, report};
 
 /// Sets up the thread pool configuration based on CLI arguments.
-fn setup_thread_pool(args: &Args) -> Result<()> {
+///
+/// `roots` are the directories about to be scanned. When no `--threads` or
+/// strategy was given and any root sits on a network or parallel filesystem,
+/// the pool is capped at [`NETWORK_FS_THREADS`] rather than all cores.
+fn setup_thread_pool(args: &Args, roots: &[&Path]) -> Result<()> {
     // An explicit --threads N takes precedence over any strategy: build the
     // global rayon pool with exactly that many threads. (Previously this
     // branch returned without configuring anything, silently running on all
@@ -53,6 +61,23 @@ fn setup_thread_pool(args: &Args) -> Result<()> {
         if n == 0 {
             anyhow::bail!("--threads must be greater than 0");
         }
+        configure_pool(ThreadPoolStrategy::Fixed, n)?;
+        return Ok(());
+    }
+
+    if args.threads_strategy == ThreadPoolStrategy::Default
+        && let Some((root, fs)) = roots
+            .iter()
+            .find_map(|r| network_fs_type(r).map(|fs| (r, fs)))
+    {
+        let n = num_cpus::get().min(NETWORK_FS_THREADS);
+        eprintln!(
+            "{} is on {}, a network filesystem: using {} threads to spare the \
+             metadata servers (--threads N to override)",
+            root.display(),
+            fs,
+            n
+        );
         configure_pool(ThreadPoolStrategy::Fixed, n)?;
         return Ok(());
     }
@@ -78,58 +103,33 @@ fn setup_thread_pool(args: &Args) -> Result<()> {
     Ok(())
 }
 
-/// Processes raw file entries by applying depth, access-age, and show_files filters.
+/// Writes the displayed rows in the selected `--format`.
 ///
-/// `--older-than` is applied here rather than during the scan because a
-/// directory's access age is a rollup over its whole subtree: the entries that
-/// justify keeping a directory row may themselves be filtered out of the
-/// display. A directory therefore survives the filter when *anything* beneath
-/// it is old enough, which is what makes `--older-than` usable as a drill-down
-/// alongside `--depth`.
-///
-/// A file whose atime could not be read is kept: dropping it would silently hide
-/// data from a report whose purpose is to account for everything at risk. A
-/// *directory* with no access age has no leaves beneath it and so nothing at
-/// risk, and is dropped rather than padding the report with empty directories.
-///
-/// `--min-size` applies to files and directories alike. Hiding a small directory
-/// never hides anything the user asked to see: a directory's size is the total
-/// of its whole subtree, so if it is under the threshold every entry beneath it
-/// is too.
-fn process_entries(root: &Path, args: &Args, raw: Vec<FileEntry>, now: u64) -> Vec<FileEntry> {
-    raw.into_iter()
-        .filter(|entry| {
-            // Apply depth filtering
-            let depth = path_depth(root, &entry.path);
-            let depth_ok = match entry.entry_type {
-                EntryType::Dir => args.depth.map(|d| depth <= d).unwrap_or(true),
-                EntryType::File => {
-                    args.show_files && args.depth.map(|d| depth <= d).unwrap_or(true)
-                }
-            };
-
-            let age_ok = match (args.older_than, entry.atime) {
-                (None, _) => true,
-                (Some(min_days), Some(at)) => atime::age_days(at, now) >= min_days,
-                (Some(_), None) => entry.entry_type == EntryType::File,
-            };
-
-            let size_ok = args.min_size.is_none_or(|min| entry.size >= min);
-
-            depth_ok && age_ok && size_ok
-        })
-        .collect()
+/// CSV and JSON share one row conversion ([`output::csv::row`]), so the two
+/// can never disagree on a field.
+fn output_results(
+    entries: &[FileEntry],
+    args: &Args,
+    root: &Path,
+    now: u64,
+    json: &output::json::JsonContext,
+) -> Result<()> {
+    match args.output_format()? {
+        OutputFormat::Table => output::render_terminal(entries, args, root, now),
+        OutputFormat::Csv => output::render_csv(entries, args, now),
+        OutputFormat::Json => output::render_json(entries, args, now, json),
+    }
 }
 
-/// Outputs the results either to CSV file or terminal based on CLI arguments.
-///
-/// Delegates to the modular output formatters in [`output`] so that both
-/// code paths share the same serialisation logic and schema.
-fn output_results(entries: &[FileEntry], args: &Args, root: &Path, now: u64) -> Result<()> {
-    if args.output.is_some() {
-        output::render_csv(entries, args, now)
+/// The `--report` sources: `--source` values, or the positional PATH alone.
+fn report_sources(args: &Args) -> Vec<report::Source> {
+    if args.source.is_empty() {
+        vec![report::Source {
+            label: report::default_label(&args.path),
+            path: args.path.clone(),
+        }]
     } else {
-        output::render_terminal(entries, args, root, now)
+        args.source.clone()
     }
 }
 
@@ -139,21 +139,12 @@ fn output_results(entries: &[FileEntry], args: &Args, root: &Path, now: u64) -> 
 /// the next scan starts, so peak memory is that of the largest source alone.
 fn run_report(
     report_path: &Path,
+    sources: &[report::Source],
     args: &Args,
     exclude_matcher: &globset::GlobSet,
     memory_monitor: Option<Arc<Mutex<memory::MemoryMonitor>>>,
     now: u64,
 ) -> Result<()> {
-    let sources = if args.source.is_empty() {
-        vec![report::Source {
-            label: report::default_label(&args.path),
-            path: args.path.clone(),
-        }]
-    } else {
-        args.source.clone()
-    };
-    report::validate_sources(&sources)?;
-
     // The report is a per-owner rollup, so owners are always resolved.
     let mut scan_args = args.clone();
     scan_args.show_owner = true;
@@ -216,6 +207,8 @@ fn main() -> Result<()> {
     }
     let args = args;
     let root = &args.path;
+    // Reject `--format table --output FILE` before a potentially long scan.
+    args.output_format()?;
 
     // One reference instant for the whole report: ages computed at different
     // points of a long scan would otherwise disagree across rows.
@@ -261,7 +254,26 @@ fn main() -> Result<()> {
         );
     }
 
-    setup_thread_pool(&modified_args)?;
+    // Report sources are validated before anything else runs, so a typo in
+    // the fifth path fails now rather than an hour into the first four scans.
+    let sources = if args.report.is_some() {
+        let sources = report_sources(&args);
+        report::validate_sources(&sources)?;
+        sources
+    } else {
+        Vec::new()
+    };
+    let roots: Vec<&Path> = if args.report.is_some() {
+        sources.iter().map(|s| s.path.as_path()).collect()
+    } else {
+        vec![root.as_path()]
+    };
+    setup_thread_pool(&modified_args, &roots)?;
+
+    if args.auto_exclude {
+        modified_args.exclude = with_auto_excludes(&modified_args.exclude);
+        eprintln!("Auto-excluding: {}", AUTO_EXCLUDES.join(" "));
+    }
 
     let expanded_patterns = expand_exclude_patterns(&modified_args.exclude);
     let exclude_matcher = build_exclude_matcher(&expanded_patterns)?;
@@ -288,6 +300,7 @@ fn main() -> Result<()> {
     if let Some(report_path) = &args.report {
         return run_report(
             report_path,
+            &sources,
             &modified_args,
             &exclude_matcher,
             memory_monitor,
@@ -359,6 +372,25 @@ fn main() -> Result<()> {
         None
     };
 
+    // Whole-scan totals for `--format json`, also taken before filtering.
+    let totals = output::json::ScanTotals {
+        total_bytes: scan_entries
+            .iter()
+            .find(|e| e.path == *root)
+            .map_or(0, |e| e.size),
+        files: scan_entries
+            .iter()
+            .filter(|e| e.entry_type == EntryType::File)
+            .count() as u64,
+        dirs: scan_entries
+            .iter()
+            .filter(|e| e.entry_type == EntryType::Dir)
+            .count() as u64,
+        cache_hits: scan_result.cache_hits,
+        cache_total: scan_result.cache_total,
+        partial: scan_result.memory_limit_hit,
+    };
+
     let processed_entries = process_entries(root, &args, scan_entries, now);
 
     if let (Some(ref mut prof), Some(timer)) = (profile.as_mut(), process_timer) {
@@ -372,7 +404,11 @@ fn main() -> Result<()> {
         None
     };
 
-    output_results(&processed_entries, &args, root, now)?;
+    let json_ctx = output::json::JsonContext {
+        totals: &totals,
+        age_summary: age_summary.as_ref(),
+    };
+    output_results(&processed_entries, &args, root, now, &json_ctx)?;
 
     // Summary goes to stderr, like the banner and cache statistics, so it never
     // contaminates a piped table or a CSV stream on stdout.

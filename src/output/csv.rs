@@ -12,6 +12,30 @@ use humansize::{DECIMAL, format_size};
 use std::fs::File;
 use std::io;
 
+/// Converts one entry to the canonical output row.
+///
+/// Shared by the CSV and JSON renderers so the two formats can never disagree
+/// on a field. The access-age fields are `None` unless `--show-atime` was given.
+pub fn row(entry: &FileEntry, args: &Args, now: u64) -> CsvEntry {
+    let atime = if args.show_atime { entry.atime } else { None };
+    CsvEntry {
+        entry_type: entry.entry_type.as_str().to_string(),
+        size_bytes: entry.size,
+        size_human: format_size(entry.size, DECIMAL),
+        owner: entry.owner.clone(),
+        path: entry.path.display().to_string(),
+        inodes: entry.inodes,
+        atime: atime.map(format_date),
+        atime_unix: atime,
+        age_days: atime.map(|at| age_days(at, now)),
+        at_risk_bytes: if args.show_atime {
+            entry.at_risk_bytes
+        } else {
+            None
+        },
+    }
+}
+
 /// Renders file entries to CSV format.
 ///
 /// Converts each `FileEntry` to the canonical `CsvEntry` schema (which includes
@@ -39,24 +63,7 @@ pub fn render(entries: &[FileEntry], args: &Args, now: u64) -> Result<()> {
     let mut csv_writer = Writer::from_writer(writer);
 
     for entry in entries {
-        let atime = if args.show_atime { entry.atime } else { None };
-        let csv_entry = CsvEntry {
-            entry_type: entry.entry_type.as_str().to_string(),
-            size_bytes: entry.size,
-            size_human: format_size(entry.size, DECIMAL),
-            owner: entry.owner.clone(),
-            path: entry.path.display().to_string(),
-            inodes: entry.inodes,
-            atime: atime.map(format_date),
-            atime_unix: atime,
-            age_days: atime.map(|at| age_days(at, now)),
-            at_risk_bytes: if args.show_atime {
-                entry.at_risk_bytes
-            } else {
-                None
-            },
-        };
-        csv_writer.serialize(csv_entry)?;
+        csv_writer.serialize(row(entry, args, now))?;
     }
 
     csv_writer.flush()?;

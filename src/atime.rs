@@ -134,7 +134,7 @@ pub fn apply_rollup(entries: &mut [FileEntry], root: &Path, purge_days: u64, now
 }
 
 /// One age band of an [`AgeSummary`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct AgeBucket {
     /// Human label, e.g. `"30-90d"`.
     pub label: String,
@@ -143,7 +143,7 @@ pub struct AgeBucket {
 }
 
 /// Whole-scan breakdown of file bytes by access age.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct AgeSummary {
     pub buckets: Vec<AgeBucket>,
     /// Total bytes over all leaves with a known atime.
@@ -302,6 +302,7 @@ mod tests {
             entry_type: EntryType::File,
             atime: Some(days_ago(age)),
             at_risk_bytes: None,
+            link_id: None,
         }
     }
 
@@ -314,6 +315,7 @@ mod tests {
             entry_type: EntryType::Dir,
             atime: Some(days_ago(0)),
             at_risk_bytes: None,
+            link_id: None,
         }
     }
 

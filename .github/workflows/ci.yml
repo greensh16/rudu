@@ -94,3 +94,45 @@ jobs:
         run: |
           rustup target add x86_64-unknown-linux-musl
           cargo check --target x86_64-unknown-linux-musl --all-targets
+
+  # ── Performance ──────────────────────────────────────────────────────────────
+  # Times the PR's release build against its base branch's on the same runner,
+  # interleaving runs so runner drift hits both equally, and checks that JSON
+  # output costs no more than CSV. Thresholds (20% regression, 10% JSON
+  # overhead) are looser than the targets because hosted runners are noisy;
+  # what this exists to catch — an extra syscall per entry, a quadratic loop —
+  # shows up far above that. See scripts/perf_check.py.
+  perf:
+    name: Performance
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: perf
+          workspaces: |
+            . -> target
+            base -> target
+
+      - name: Build PR head (release)
+        run: cargo build --release
+
+      - name: Build base branch (release)
+        run: |
+          git worktree add base "${{ github.event.pull_request.base.sha }}"
+          cargo build --release --manifest-path base/Cargo.toml
+
+      - name: Compare
+        run: |
+          python3 scripts/perf_check.py \
+            --head target/release/rudu \
+            --base base/target/release/rudu

@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.6.0] - 2026-10-04
 
 ### Features
 
@@ -24,9 +24,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   next scan, so peak memory is that of the largest source, not their sum. The
   cache, `--exclude`, `--memory-limit`, and `--purge-days` all apply; a source
   cut short by the memory limit is flagged on the page as a lower bound.
-- Bytes are summed over files by each file's own owner. Hard links count once
-  per link and directories' own blocks are not attributed, so totals can differ
-  slightly from `du`; the page footer says so.
+- Bytes are summed over files by each file's own owner. **Hard links count
+  once**, by `(dev, ino)`, across all sources and on cache-hit runs too, so a
+  report's totals match `du`: on a 50 GB tree full of Cargo build directories,
+  counting per link had over-stated it by 3.6%. Directories' own blocks are not
+  attributed to an owner.
+
+#### `--format table|csv|json`
+- `--format json` writes one document: `scan_info` (root, version, time, every
+  filter), `entries` (exactly the CSV rows), and `summary` (whole-scan totals
+  before display filters, cache stats, a `partial` flag for memory-limited
+  scans, and the access-age breakdown with `--show-atime`). Schema, with a
+  `schema_version`, in `docs/json-schema.md`.
+- `--format csv` writes CSV to stdout without needing `--output`. `--output`
+  alone still means CSV, so existing scripts are unchanged; `--format table
+  --output FILE` is rejected before the scan.
+- CSV and JSON share one row conversion, so the formats cannot drift. JSON is
+  streamed rather than built in memory; it runs within ±1% of CSV on a 50k-entry
+  tree (the target was 5%).
+
+#### `--max-size`
+- The upper-bound counterpart to `--min-size`, with the same units; combine
+  them for a size band. A display filter, so totals are unaffected.
+
+#### `--auto-exclude`
+- Opt-in: adds `.git`, `.hg`, `.svn`, `node_modules`, `target`, `__pycache__`,
+  `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, and `.tox` to `--exclude`.
+  Deliberately not a default (as ROADMAP originally planned): excluded data is
+  not counted, so totals would silently stop matching `du`, and on shared
+  storage a `target` directory can be real data.
+
+### Changed
+- **Fewer threads by default on network and parallel filesystems.** When a scan
+  root is on Lustre, NFS, GPFS, BeeGFS, CephFS, PanFS, AFS, 9P, or SMB (one
+  `statfs` call, no pre-scan), rudu uses at most 8 threads instead of every
+  core and says so on stderr. Each `lstat` there is a metadata-server round trip
+  shared with other users. `--threads N` still overrides; local filesystems
+  still use all cores.
+- `process_entries` (the display filters) moved from `main.rs` to the library
+  as `rudu::filter`, so it can be tested directly.
+- **Cache format changed** (files now record hard-link identity). Existing caches
+  are discarded and rebuilt on the first run, as on any version change.
+
+### Maintenance
+- Property-based tests (`proptest`) for `parse_size` — no panics on any input,
+  every unit round-trips, printed sizes parse back to within display precision —
+  and for the display filters, which must only ever hide rows.
+- New `perf` CI job on pull requests: builds the PR and its base in release
+  mode and times them interleaved on a ~50k-entry synthetic tree
+  (`scripts/perf_check.py`), failing on a >20% scan regression or JSON output
+  >10% slower than CSV.
 
 ## [1.5.1] - 2026-09-08
 

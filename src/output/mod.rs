@@ -8,6 +8,7 @@
 //!
 //! - **Terminal**: Human-readable output with colored prefixes and formatting
 //! - **CSV**: Machine-readable CSV format for data analysis and processing
+//! - **JSON**: One document with scan metadata, the CSV rows, and whole-scan totals
 //!
 //! # Usage
 //!
@@ -16,6 +17,7 @@
 //! be independent and stateless, making them easy to test and extend.
 
 pub mod csv;
+pub mod json;
 pub mod terminal;
 
 // Re-export the main render functions for convenience
@@ -24,6 +26,11 @@ pub mod terminal;
 ///
 /// See [`csv::render`] for full documentation.
 pub use csv::render as render_csv;
+
+/// JSON output renderer function.
+///
+/// See [`json::render`] for full documentation.
+pub use json::render as render_json;
 
 /// Terminal output renderer function.
 ///

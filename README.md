@@ -27,6 +27,7 @@ rudu /project --exclude .git --output out.csv # exclude .git, export to CSV
 rudu /lustre --memory-limit 900 --no-cache    # HPC cluster with 1 GB job limit
 rudu /scratch/ab12 --older-than 100 --sort size  # what a 100-day purge will take
 rudu /project --min-size 10MB                 # hide anything under 10 MB
+rudu /data --format json | jq .summary        # structured output
 rudu --report stocktake.html --source /g/data/gb02 /g/data/if69  # HTML stocktake
 ```
 
@@ -38,8 +39,8 @@ For the full options reference and annotated examples, see [docs/basic-usage.md]
 
 - **Parallel scanning** — work-stealing thread pool via `rayon`; configurable with `--threads N`
 - **True disk usage** — `st_blocks × 512`, same as `du`
-- **Depth, size & exclusion filtering** — `--depth N`, `--min-size 10MB`, `--exclude PATTERN`
-- **Flexible output** — terminal table or `--output report.csv`
+- **Depth, size & exclusion filtering** — `--depth N`, `--min-size 10MB`, `--max-size 1GB`, `--exclude PATTERN`, opt-in `--auto-exclude`
+- **Flexible output** — terminal table, CSV, or JSON (`--format`, schema in [docs/json-schema.md](docs/json-schema.md))
 - **Owner & inode info** — `--show-owner`, `--show-inodes`
 - **Access-age reporting** — `--show-atime` shows how close data is to a scratch purge policy (NCI `/scratch`: 100 days); `--older-than`, `--purge-days`
 - **HTML stocktake report** — `--report FILE --source PATH...` scans several data sources (e.g. NCI projects) and writes one self-contained page: storage, inodes, and access age per owner and per source, with an interactive chart and sortable table

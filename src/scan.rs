@@ -201,6 +201,16 @@ fn atime_of(meta: &Option<crate::utils::DirMetadata>) -> Option<u64> {
     meta.as_ref().map(|m| m.atime)
 }
 
+/// `(dev, ino)` for a leaf with more than one hard link, else `None`.
+///
+/// Only multi-link files need an identity: a single-link inode can only be
+/// reached by one path, so there is nothing to deduplicate.
+fn link_id_of(meta: &Option<crate::utils::DirMetadata>) -> Option<(u64, u64)> {
+    meta.as_ref()
+        .filter(|m| m.nlink > 1)
+        .map(|m| (m.dev, m.ino))
+}
+
 /// Lightweight job struct to minimize per-entry allocation during parallel processing
 #[derive(Debug)]
 struct ScanJob {
@@ -300,6 +310,8 @@ fn scan_with_work_stealing(
     let entry_owners: DashMap<PathBuf, u32> = DashMap::new();
     // Access times from that same lstat, for --show-atime / --older-than.
     let entry_atimes: DashMap<PathBuf, u64> = DashMap::new();
+    // Inode identity of multi-link leaves, for consumers that sum leaves.
+    let entry_link_ids: DashMap<PathBuf, (u64, u64)> = DashMap::new();
     // Inodes of multi-link files already counted in totals (hard-link dedup).
     let seen_inodes: DashSet<(u64, u64)> = DashSet::new();
 
@@ -321,6 +333,11 @@ fn scan_with_work_stealing(
 
         if let Some(at) = meta.as_ref().map(|m| m.atime) {
             entry_atimes.insert(path.clone(), at);
+        }
+        if let Some(id) = link_id_of(&meta)
+            && !entry.file_type().is_dir()
+        {
+            entry_link_ids.insert(path.clone(), id);
         }
 
         let is_dir = entry.file_type().is_dir();
@@ -440,6 +457,7 @@ fn scan_with_work_stealing(
                     entry_type: EntryType::File,
                     atime,
                     at_risk_bytes: None,
+                    link_id: entry_link_ids.get(&path).map(|v| *v),
                 }
             } else {
                 let size = dir_totals.get(&path).map(|v| *v).unwrap_or(0);
@@ -461,6 +479,7 @@ fn scan_with_work_stealing(
                     // Replaced by the subtree rollup in `atime::apply_rollup`.
                     atime,
                     at_risk_bytes: None,
+                    link_id: None,
                 }
             }
         })
@@ -886,6 +905,7 @@ fn scan_files_and_dirs_with_monitor(
                     entry_type: EntryType::File,
                     atime: atime_of(&job.meta),
                     at_risk_bytes: None,
+                    link_id: link_id_of(&job.meta),
                 };
 
                 // Cache file entries too, so that cache-hit subtrees can restore
@@ -904,6 +924,7 @@ fn scan_files_and_dirs_with_monitor(
                         // --show-atime run blind over every hit subtree.
                         atime: Some(metadata.atime),
                     })
+                    .with_link_id(link_id_of(&job.meta))
                 });
 
                 (entry, cache_entry)
@@ -949,6 +970,7 @@ fn scan_files_and_dirs_with_monitor(
                     // for directories that contain no leaves at all.
                     atime: atime_of(&job.meta),
                     at_risk_bytes: None,
+                    link_id: None,
                 };
 
                 (entry, cache_entry)
@@ -991,6 +1013,7 @@ fn scan_files_and_dirs_with_monitor(
             // than the truth, so it over-states age and never hides risk.
             atime: cached_entry.atime,
             at_risk_bytes: None,
+            link_id: cached_entry.link_id,
         })
         .collect();
 

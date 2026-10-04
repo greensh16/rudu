@@ -17,6 +17,7 @@ use std::path::PathBuf;
 ///   is the *oldest* access time in the subtree, see [`crate::atime`]
 /// * `at_risk_bytes` - Directories only: bytes under this directory belonging
 ///   to files older than the access-age policy threshold
+/// * `link_id` - `(dev, ino)` of a multi-link leaf, for hard-link dedup
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct FileEntry {
     pub path: PathBuf,
@@ -39,6 +40,14 @@ pub struct FileEntry {
     /// access-age threshold (`--purge-days`). `None` for files, and for
     /// directories until [`crate::atime::apply_rollup`] has run.
     pub at_risk_bytes: Option<u64>,
+    /// Inode identity `(st_dev, st_ino)` for a leaf with more than one hard
+    /// link; `None` for directories and single-link files.
+    ///
+    /// Lets consumers that sum leaves — the `--report` owner rollup — count a
+    /// hard-linked inode once, as the scan's own directory totals already do.
+    /// Not serialised: it is bookkeeping, not output.
+    #[serde(skip)]
+    pub link_id: Option<(u64, u64)>,
 }
 
 /// Represents the type of file system entry.
@@ -81,6 +90,7 @@ mod tests {
             entry_type: EntryType::File,
             atime: None,
             at_risk_bytes: None,
+            link_id: None,
         };
 
         assert_eq!(entry.size, 1024);

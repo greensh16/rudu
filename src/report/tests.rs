@@ -12,6 +12,7 @@ fn file(path: &str, size: u64, owner: &str, age_days: Option<u64>) -> FileEntry 
         entry_type: EntryType::File,
         atime: age_days.map(|d| NOW - d * DAY),
         at_risk_bytes: None,
+        link_id: None,
     }
 }
 
@@ -177,4 +178,31 @@ fn test_common_parent_only_when_shared() {
     assert_eq!(t(&["/g/data/a", "/g/data/b"]), Some("/g/data".to_string()));
     assert_eq!(t(&["/g/data/a", "/scratch/b"]), None);
     assert_eq!(t(&["relative"]), None);
+}
+
+#[test]
+fn test_hard_links_count_once_even_across_sources() {
+    let linked = |path: &str| FileEntry {
+        link_id: Some((1, 42)),
+        ..file(path, 1_000, "alice", Some(200))
+    };
+    let mut st = Stocktake::new(100, NOW);
+    st.add_source(
+        &source("p1", "/p1"),
+        &[
+            linked("/p1/a"),
+            linked("/p1/b"),
+            file("/p1/c", 10, "alice", Some(0)),
+        ],
+        false,
+    );
+    st.add_source(&source("p2", "/p2"), &[linked("/p2/a")], false);
+
+    let alice = owner(&st, "alice");
+    assert_eq!(alice.b.get("p1"), Some(&1_010));
+    assert_eq!(alice.b.get("p2"), None);
+    assert_eq!(alice.files, 2);
+    assert_eq!(alice.stale, 1_000);
+    assert_eq!(st.sources()[0].inodes, 2);
+    assert_eq!(st.sources()[1].inodes, 0);
 }

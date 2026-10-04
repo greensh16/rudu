@@ -19,14 +19,17 @@ rudu [PATH] [OPTIONS]
 | `--sort <name\|size>` | Sort output by name or size (default: name) |
 | `--show-files <true\|false>` | Show individual files at target depth (default: true) |
 | `--exclude <PATTERN>` | Exclude entries matching patterns (e.g., '.git', 'node_modules') |
+| `--auto-exclude` | Also exclude common noise directories (`.git`, `node_modules`, `target`, `__pycache__`, tool caches) |
 | `--show-owner` | Show owner (username) of each file/directory |
-| `--output <FILE>` | Write output to CSV file instead of stdout |
+| `--output <FILE>` | Write output to FILE instead of stdout (CSV unless `--format` says otherwise) |
+| `--format <table\|csv\|json>` | Output format (default: `table`, or `csv` with `--output`) |
 | `--threads <N>` | Limit number of CPU threads used |
 | `--show-inodes` | Show inode usage (number of files/subdirectories) |
 | `--no-cache` | Disable caching and force full rescan |
 | `--cache-ttl <SECONDS>` | Cache TTL in seconds (default: 604800 = 7 days) |
 | `--profile` | Enable performance profiling and show timing summary |
 | `--min-size <SIZE>` | Hide entries smaller than SIZE (e.g. `10MB`, `1.5GiB`, `4096`) |
+| `--max-size <SIZE>` | Hide entries larger than SIZE (same units) |
 | `--report <FILE>` | Write an HTML stocktake report instead of a table (see below) |
 | `--source <[LABEL=]PATH>...` | Data sources for `--report` (default: PATH) |
 | `--report-title <TEXT>` | Title of the `--report` page (default: `Data Stocktake`) |
@@ -190,6 +193,17 @@ rudu /project --exclude .git --exclude node_modules --exclude target
 rudu /data --exclude temp --exclude cache
 ```
 
+**Exclude the usual noise in one flag:**
+```bash
+rudu ~/code --auto-exclude
+```
+
+`--auto-exclude` adds `.git`, `.hg`, `.svn`, `node_modules`, `target`,
+`__pycache__`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, and `.tox` to
+`--exclude`, and prints the list to stderr. It is off by default because
+excluded data is not counted, so totals stop matching `du` — and on shared
+storage a directory called `target` may well be real data.
+
 ### Owner Information
 
 **Display file owners:**
@@ -232,6 +246,13 @@ rudu /large/directory --threads 4
 rudu /data --threads 1
 ```
 
+**Network and parallel filesystems:** when the scan root is on Lustre, NFS,
+GPFS, BeeGFS, CephFS, PanFS, AFS, 9P, or SMB, rudu defaults to at most 8
+threads instead of every core, and says so on stderr. Each `lstat` there is a
+round trip to a metadata server shared with every other user, so more threads
+mostly add load. `--threads N` always overrides this, and `--memory-limit`'s
+2-thread default still applies.
+
 ### Caching Features
 
 **Disable caching for fresh scan:**
@@ -244,12 +265,23 @@ rudu /path/to/scan --no-cache
 rudu /data --cache-ttl 3600
 ```
 
-### CSV Export
+### CSV and JSON Export
 
 **Export results to CSV:**
 ```bash
 rudu /data --output analysis.csv
+rudu /data --format csv | head        # CSV to stdout
 ```
+
+**Export results to JSON:**
+```bash
+rudu /data --format json --output analysis.json
+rudu /data --format json --depth 1 | jq '.summary.total_bytes'
+```
+
+JSON holds the same rows as CSV plus `scan_info` (how the scan was run) and
+`summary` (whole-scan totals, unaffected by display filters). The schema is in
+[json-schema.md](json-schema.md).
 
 ### Performance Profiling
 
@@ -283,8 +315,20 @@ Key properties:
 - **It applies to directories too**, and hiding a small directory can never hide
   something you wanted: a directory's size is the total of its whole subtree, so
   if it is under the threshold, everything beneath it is too.
-- **It composes** with `--depth`, `--exclude`, and `--older-than`; an entry must
-  satisfy all of them to be shown.
+- **It composes** with `--depth`, `--exclude`, `--older-than`, and `--max-size`;
+  an entry must satisfy all of them to be shown.
+
+`--max-size` is the upper bound, with the same units. Together they select a
+size band — for example, the many small files that use up an inode quota:
+
+```bash
+rudu /g/data/ab12 --max-size 100KB --show-files true --sort size
+rudu /project --min-size 1MB --max-size 10MB
+```
+
+Unlike `--min-size`, `--max-size` can hide a directory while still showing small
+files inside it: a large directory is large because of its contents, not
+because each item in it is.
 
 **Units.** A bare number is bytes. Suffixes are case-insensitive and may be
 fractional (`1.5GB`):
